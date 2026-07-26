@@ -1,0 +1,25 @@
+{
+  "folders": [
+    {
+      "name": "nuage-workspace",
+      "path": "."
+    },
+    {
+      "name": "nuage-cluster",
+      "path": "../nuage-cluster"
+    },
+    {
+      "name": "nuage-monitoring-stack",
+      "path": "../nuage-monitoring-stack"
+    },
+    {
+      "name": "pechka",
+      "path": "../pechka"
+    },
+    {
+      "name": "bare-web-proxy",
+      "path": "../bare-web-proxy"
+    }
+  ],
+  "settings": {}
+}
