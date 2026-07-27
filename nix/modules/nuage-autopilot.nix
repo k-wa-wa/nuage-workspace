@@ -47,8 +47,14 @@ let
 
         ExecStart = "${lib.getExe cfg.package} --repo ${repo}";
 
-        # DynamicUser は使わない: git clone と後続の LLM CLI が安定した HOME を要求するため。
-        # User を明示しない場合 root で実行される。
+        # DynamicUser は使わない: git clone と LLM CLI が安定した HOME を要求するため。
+        #
+        # claude / agy は CLI の TUI でサインインし、認証情報を実行ユーザーの HOME
+        # (~/.claude 等) に保存する。サービスを root で動かすと、SSH でログインして
+        # サインインしたユーザーの認証情報を読めない。そのため、人間がサインインする
+        # ユーザーとサービスの実行ユーザーを一致させる。
+        # systemd は User= 指定時に HOME / USER / LOGNAME を passwd から設定する。
+        User = cfg.user;
       };
     };
   };
@@ -91,6 +97,16 @@ in
         1 リポジトリにつき service + timer が 1 組ずつ生成される。
       '';
       example = [ "k-wa-wa/pechka" "k-wa-wa/nuage-cluster" ];
+    };
+
+    user = mkOption {
+      type = types.str;
+      default = "nixos";
+      description = ''
+        サービスの実行ユーザー。
+        claude / agy は TUI でサインインした結果を実行ユーザーの HOME に保存するため、
+        人間が SSH でログインしてサインインするユーザーと一致させる必要がある。
+      '';
     };
 
     stateDir = mkOption {
