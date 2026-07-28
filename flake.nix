@@ -29,6 +29,8 @@
 
             src = ./autopilot;
 
+            ldflags = [ "-X main.version=0.1.0" ];
+
             # vendor/ をコミットする方針のため vendorHash は不要にする。
             # エージェント自身が依存を追加するため、vendorHash 管理を必須にすると
             # 依存追加のたびにハッシュがズレてビルドが壊れる。詳細は autopilot/DESIGN.md 5章。
