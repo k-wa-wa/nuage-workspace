@@ -32,23 +32,7 @@
 
 ## B. 高 (High)
 
-### B-1. Issue と PR の紐付けが dispatcher に見えない — 重複 PR を生む
-
-`dev` worker が Issue #42 から `feature/issue-42` を切って PR #43 を作っても、Issue #42 は open のまま、`agent:` ラベルも付かない（DESIGN.md 8章の方針どおり worker はラベル遷移をしない）。次サイクル、dispatcher に渡る候補には Issue #42 と PR #43 が**互いに無関係な 2 件として**並ぶ。`DispatchCandidate` には紐付け情報が一切無く、PR 本文の `Closes #42` も Issue 側からは見えない。
-
-dispatcher プロンプトは「着手されていない新規の Issue には spec を」と指示しているだけなので、Issue #42 に再び dev が割り当てられ、**同じ内容の 2 本目のブランチと PR** が作られる可能性が高い。
-
-**対処（Go 側が確実）**: `buildDispatchCandidates` で PR 本文の `Closes #N` / `Fixes #N` および `feature/issue-N` 形式の head ref を走査し、Issue 候補に `関連PR: #43 (open)` を注記する。決定論的に書ける処理を LLM の推測に委ねない、という DESIGN.md 8章の janitor に関する判断と同じ考え方である。
-
-**対処（プロンプト側、併用推奨）**: dev(Issue) プロンプトの冒頭に既存 PR の確認手順を入れる（後述 P-8）。
-
-### B-2. `ListComments` が「最も古い 100 件」しか取らない
-
-`comments.go:12` は `?per_page=100` のみでソート指定もページネーションも無い。GitHub のコメント API は**既定で昇順（古い順）**なので、コメントが 100 件を超えたアイテムでは **新しいコメントが 1 件も取得できない**。
-
-`botCommentsSinceLastHuman` は取得済みの配列を降順ソートしてから数えるので、「取得できた範囲での最新」を最新だと誤認する。dispatcher に渡る「直近コメント（新しい順）」も同様に嘘になる。100 件は autopilot が回るリポジトリでは十分到達しうる。
-
-`issues.go:11` の TODO は件数超過を認識しているが、**「先頭ページ ＝ 最古」という向きの問題**は認識されていないように読める。少なくとも `&sort=created&direction=desc` を付けるべきで、Link ヘッダ追跡まで実装できればなお良い。
+(B-1, B-2, B-3, B-4, B-5, B-6 ともに対応完了)
 
 ---
 
@@ -56,48 +40,13 @@ dispatcher プロンプトは「着手されていない新規の Issue には s
 
 | # | 箇所 | 内容 |
 | :-- | :-- | :-- |
-| C-2 | `cycle/dispatcher.go:137` | リトライが**まったく同じプロンプト**の再送。決定論的に同じ失敗を繰り返しやすい。2 回目には `lastErr`（「番号 N は候補集合に無い」等）をプロンプトに追記して差分を与える |
-| C-3 | `cycle/cycle.go:133-137` | 候補 1 件の `ListComments` が失敗しただけでサイクル全体が中断する。1 件の一時的な失敗で他リポジトリの処理まで巻き添えにするのは重い。ログして当該候補をスキップするほうが可用性が高い |
-| C-4 | `cycle/cycle.go:149-161` | ループ上限に達した候補が 1 件でもあると `return` してしまい、同サイクルの健全な候補は処理されない。ラベル付与後はそのまま dispatch に進めてよい（付与済みアイテムを候補から除くだけ） |
-| C-5 | `repo/repo.go:146` | `EnsureWorkspace` が毎サイクル**全リポジトリ**を `fetch` + `reset --hard` + `clean -fd` する。(a) 前サイクルが未 push で残した commit を無警告で破棄する、(b) 5 リポジトリ × 5 サイクル = 1 起動あたり `ls-remote` 25 回。対象リポジトリ以外は「未 clone なら clone、あれば何もしない」で足りる |
-| C-7 | `github/types.go:89` | `PullRequest.Draft` を取得しているが `Item` にも `DispatchCandidate` にも伝播していない。Draft PR は通常「レビュー前」なので dispatcher に渡す価値がある |
-| C-9 | `runner/runner.go:207` | `scanner.Buffer(..., 1024*1024)` により 1MB を超える 1 行で読み取りが失敗する。`--output-format json` の応答は 1 行なので、worker 側でこの形式を使うようになった場合に問題化する。dispatcher の応答は小さいので現状は顕在化しない |
-| C-10 | `prompt/dev.go:59` | `echo ... > pr_body.md` を**リポジトリの作業ツリー内**に作る。コマンドが途中で失敗すると `rm` に到達せず、後続の `git add -A` で成果物に混入する。`mktemp` でツリー外に作るべき |
-| C-12 | `config/config.go:66` | `--repos` の各要素が `owner/name` 形式かを検証していない。誤設定は `repo.splitRepo` まで進んでから初めて分かる |
+| C-5 | `repo/repo.go:146` | （方針決定済: 毎回全リポジトリを reset --hard でリセット維持） |
 
 ---
 
 ## D. プロンプトの改善
 
-ここが本題。現状のプロンプトは旧 `nuage-agent` からの忠実な移植として質が高いが、**「ラベル駆動の状態機械」から「dispatcher が毎サイクル推測する」方式に変わったことの含意が、プロンプト本文にまだ反映されていない**。dispatcher が推測するしかない以上、worker の出力は推測しやすい形で残さなければならない。それが P-1〜P-3 の主題である。
-
-### P-1. 合格判定の投稿先を統一する【最優先 / A-1 の対処】
-
-`internal/prompt/review.go:62-66` を次のように変える。
-
-```go
-2. **問題ない場合 (Passed)**
-   すべての観点でチェックに合格した場合、PR に合格判定のコメントを投稿する。
-   - **重要**: 「gh pr review」 は使用しないこと。gh pr review が作成する Review オブジェクトは
-     Issue コメント API に現れず、次サイクルの dispatcher からもループ上限の判定からも
-     観測できないため、レビュー済みの PR に対して review が際限なく繰り返されることになる。
-     必ず 「gh pr comment」 を使うこと。
-   - コメント投稿: 「gh pr comment %[3]d --body-file <一時ファイル>」
-```
-
-`--approve` を避ける理由（自己 PR への Approve 不可）は正しいが、その代替が `--comment` である必要はない。
-
-### P-7. 重複着手を防ぐ
-
-`dev`(Issue) プロンプトの手順 1 の前に置く（B-1 の対処）。
-
-```
-0. **重複着手の確認（必須）**
-   実装を始める前に、この Issue に対する Pull Request が既に存在しないかを確認する。
-   コマンド: 「gh pr list --state all --search "%[4]d in:body" --json number,state,title,headRefName」
-   既に open な PR が存在する場合、新しいブランチや PR を作ってはならない。その PR に対する
-   修正として作業するか、追加作業が不要と判断した場合はその旨を結果コメントに書いて終了する。
-```
+(P-1 ~ P-11 ともに対応完了)
 
 `spec` にも同種のガードが要る（本文に既に PRD と AC が書かれている Issue に対して、再度 spec が走って PRD を二重投稿する経路がある）。
 
@@ -108,23 +57,6 @@ dispatcher プロンプトは「着手されていない新規の Issue には s
 ```
 ## リポジトリ横断の作業について
 - 作業ディレクトリの親ディレクトリには、本ワークスペースの他リポジトリが兄弟ディレクトリとして
-  clone されている（例: ../nuage-cluster、../pechka）。参照は自由に行ってよい。
-- ただし、他リポジトリへの**変更は当該リポジトリで別の Pull Request として起票**すること。
-  カレントリポジトリの PR に他リポジトリの変更を混ぜてはならない。
-- 他リポジトリへの追従が必要になったが今回のスコープで実施しない場合は、その内容を
-  当該リポジトリの Issue として起票し（gh issue create --repo <owner/name>）、
-  結果コメントにその Issue 番号を記載すること。
-```
-
-3 番目は「追従漏れ」を autopilot 自身のキューに戻す設計であり、`CLAUDE.md` 3 章の運用ルールと噛み合う。
-
-### P-11. その他の小さな修正
-
-| 箇所 | 修正内容 |
-| :-- | :-- |
-| `dev.go:59`, `spec.go:42`, `qa.go:25` | `echo ... > pr_body.md`（作業ツリー内）→ `mktemp` でツリー外に作る（C-10）。あわせて `echo` は本文中の `\n` やバックスラッシュの扱いが処理系依存なのでヒアドキュメント推奨 |
-| `spec.go:42` | 「echo "..." > issue_body.md && gh issue edit ... && rm issue_body.md」は `&&` 連鎖のため途中失敗で `rm` が実行されない。`;` 区切りか `trap` にする |
-
 ---
 
 ## E. 良かった点
