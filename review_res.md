@@ -87,31 +87,6 @@ func awaitingUserReviewNote(ctx Context) string {
 
 ---
 
-### A-3. `flake.nix` の `nixosModules` が存在しないファイルを import している
-
-`flake.nix:51` は `imports = [ ./nix/modules/nuage-autopilot.nix ]` としているが、このファイルは**一度も Git に登録されたことがない**（`git log --all -- nix/` が空）。したがって `nixosModules.nuage-autopilot` は評価時に必ず失敗する。`nix flake check` / `nix flake show` も通らない。
-
-実運用が壊れていないのは、`nuage-cluster` 側が `packages.*.nuage-autopilot` しか参照せず、systemd unit を `hosts/autopilot-server/configuration.nix` に**手書きしている**ためである。
-
-**これに伴い DESIGN.md の以下が実態と乖離している。**
-
-| DESIGN.md の記述 | 実態 |
-| :-- | :-- |
-| 4章 ディレクトリ構成に `nix/modules/nuage-autopilot.nix` | 存在しない |
-| 6章 `services.nuage-autopilot` のオプション表（11 個） | 存在しない |
-| 6章「`repositories` から 1 リポジトリにつき 1 組の service + timer を生成する」 | 単一 unit が `--repos a,b,c,d,e` で全 5 リポジトリを直列に巡回する |
-| 6章 timer 要件（`OnCalendar` / `Persistent` / `RandomizedDelaySec`） | **timer 自体が存在しない**。`systemctl start` による手動実行のみ |
-| 11章「以下は構築済みである」に `extraPathPrefixes` 等 | 該当オプションは無く、`path` を直接指定している |
-
-**対処**: どちらかに倒す。
-
-- (a) モジュールを実装して `nuage-cluster` 側の手書き unit を置き換える（DESIGN.md の当初意図）
-- (b) モジュール方式を捨て、`flake.nix` から `nixosModules` を削除して DESIGN.md 4/6/11 章を実態に合わせて書き直す
-
-現状 unit は 1 つで十分に機能しており、(b) が素直だと考える。いずれにせよ**「存在しないものを構築済みと書いた設計書」は次に触る人（あるいは autopilot 自身）を確実に誤らせる**ので、放置は避けたい。
-
----
-
 ### A-4. `TimeoutStartSec=30m` が 5 リポジトリ分の直列実行を丸ごと覆っている
 
 デプロイ側の実態:

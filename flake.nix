@@ -1,5 +1,5 @@
 {
-  description = "nuage-autopilot: GitHub Issue/PR 駆動でアプリ開発を自動化するオートパイロットの Nix パッケージと NixOS モジュール";
+  description = "nuage-autopilot: GitHub Issue/PR 駆動でアプリ開発を自動化するオートパイロットの Nix パッケージ";
 
   inputs = {
     # nuage-cluster/nix/flake.nix と同じ 24.11 に揃える。
@@ -43,18 +43,5 @@
           default = self.packages.${system}.nuage-autopilot;
         }
       );
-
-      nixosModules = {
-        nuage-autopilot =
-          { lib, pkgs, ... }:
-          {
-            imports = [ ./nix/modules/nuage-autopilot.nix ];
-
-            # package の既定値を本 flake のパッケージに設定する。
-            # モジュール本体 (nix/modules/nuage-autopilot.nix) はこの flake を知らない
-            # 単体のオプション定義であり、既定値の注入はここでのみ行う。
-            config.services.nuage-autopilot.package = lib.mkDefault self.packages.${pkgs.system}.nuage-autopilot;
-          };
-      };
     };
 }
