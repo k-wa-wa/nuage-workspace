@@ -24,69 +24,6 @@
 
 ## A. 重大 (Critical)
 
-### A-1. review worker の合格判定が Go 側からもう見えない — 無限ループを生む
-
-**現象**
-
-`internal/prompt/review.go:64` は合格時の投稿を次のように指示している。
-
-```
-gh pr review %[3]d --comment --body "[Review Result: PASSED] ..."
-```
-
-`gh pr review --comment` が作るのは **Review オブジェクト**であり、`GET /repos/{repo}/pulls/{n}/reviews` にしか現れない。一方 Go 側が読んでいるのは `internal/github/comments.go:12` の `GET /repos/{repo}/issues/{n}/comments` のみであり、ここには **Review は一切含まれない**。
-
-**影響**
-
-1. `buildDispatchCandidates`（`dispatcher.go:262`）が dispatcher に渡す「直近コメント」に合格判定が入らない。dispatcher プロンプトは「レビューが通ったのか落ちたのか」を推測せよと指示しているが、その材料が構造的に欠落している。結果、レビュー済み PR に対して毎サイクル review が再割り当てされる。
-2. `botCommentsSinceLastHuman`（`looplimit.go:26`）も Review を数えない。したがって review をどれだけ繰り返しても bot コメント数が増えず、`LoopLimit = 5` の安全弁が**永久に作動しない**。DESIGN.md 8章が「取りこぼしても実害は『もう少し回る』だけ」と書いているのは、この経路については成立していない。無限に回る。
-3. 不合格時は `gh pr comment`（issue comments 側）なので見える。つまり **「落ちたときだけ見えて、通ったときは見えない」** という最悪の非対称になっている。
-
-`internal/prompt/dev.go:92-94` が `pulls/{n}/reviews` と `pulls/{n}/comments` を別途取得するようプロンプトで指示していることから、この 3 経路の差は認識されていたはずである。Go 側にだけ反映が漏れている。
-
-**対処（両方やるべき）**
-
-- プロンプト側: 合格判定も `gh pr comment` で投稿させる（後述 P-1 / P-2 の状態行に統一する）。`--approve` を避ける理由は自己 PR 制限なので、`--comment` である必然性はない。
-- Go 側: `internal/github/pulls.go` に `ListReviews` を追加し、`Comment` 相当に正規化して `commentsByNumber` にマージする。ループ上限判定と dispatcher の両方が同じストリームを見るようにする。インラインコメント（`pulls/{n}/comments`）も同様に扱えるとなお良い。
-
----
-
-### A-2. `agent:awaiting_user_review` の付与コマンドが PR で失敗する
-
-`internal/prompt/prompt.go:68`:
-
-```
-コマンド: 「gh issue edit <対象番号> --add-label "agent:awaiting_user_review"」
-（対象が Pull Request の場合も番号を PR 番号に読み替えて同じコマンドでよい。
-  GitHub API 上、ラベル操作は Issue と PR で共通のため）
-```
-
-括弧内の理由付けは **REST API については正しいが、`gh` CLI については誤り**である。`gh issue edit` は番号を Issue として解決してから編集するため、PR 番号を渡すと `Could not resolve to an Issue with the number of N` 系のエラーで失敗する（逆に `gh pr edit` に Issue 番号を渡しても失敗する）。Go 側が `AddLabel` で REST を直叩きしているのは正しいが、worker は `gh` 経由である。
-
-**影響**: review / qa / dev(PR) の 3 worker、すなわち PR を扱う全 worker で、**設計上の唯一の脱出口が機能しない**。worker は「人間に委ねた」と認識して終了するが、実際にはラベルが付いておらず、次サイクルで再び候補になる。A-1 と組み合わさると完全な無限ループになる。
-
-**対処**: `Context.Kind` を既に持っているので、プロンプト生成時に分岐すればよい。定数を関数化する。
-
-```go
-// awaitingUserReviewNote は対象の kind に応じた正しい gh コマンドを埋め込む。
-// gh issue edit / gh pr edit は番号を種別付きで解決するため、
-// 「どちらでもよい」わけではない点に注意する。
-func awaitingUserReviewNote(ctx Context) string {
-	cmd := fmt.Sprintf(`gh issue edit %d --add-label "agent:awaiting_user_review"`, ctx.Number)
-	if ctx.Kind == KindPullRequest {
-		cmd = fmt.Sprintf(`gh pr edit %d --add-label "agent:awaiting_user_review"`, ctx.Number)
-	}
-	return fmt.Sprintf(`## 人間の判断が必要な場合
-...
-コマンド: 「%s」
-...`, cmd)
-}
-```
-
-あわせて、ラベルがリポジトリに未定義だと `gh ... --add-label` は失敗する（REST の `POST /issues/{n}/labels` は自動作成するが、`gh` の add-label は既存ラベルの解決を伴う）。**起動時に Go 側で 2 つのラベルを冪等に作成しておく**のが確実である（`POST /repos/{repo}/labels`、422 は無視）。
-
----
-
 ### A-4. `TimeoutStartSec=30m` が 5 リポジトリ分の直列実行を丸ごと覆っている
 
 デプロイ側の実態:
