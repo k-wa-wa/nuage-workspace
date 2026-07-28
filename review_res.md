@@ -50,37 +50,6 @@ dispatcher プロンプトは「着手されていない新規の Issue には s
 
 `issues.go:11` の TODO は件数超過を認識しているが、**「先頭ページ ＝ 最古」という向きの問題**は認識されていないように読める。少なくとも `&sort=created&direction=desc` を付けるべきで、Link ヘッダ追跡まで実装できればなお良い。
 
-### B-4. プロンプトインジェクション経路が開いている
-
-`nuage-workspace` は public リポジトリであり、DESIGN.md もそう明記している。第三者が起票した Issue の本文とコメントが、
-
-1. dispatcher（haiku, `--permission-mode bypassPermissions`）
-2. worker（既定モデル, 同じく `bypassPermissions`）
-
-にそのまま渡り、worker は `repo` スコープの `GH_TOKEN` を環境変数として継承した状態でシェルを自由に叩ける。しかも巡回対象には `nuage-cluster`（クラスタ構成）と `nuage-workspace`（autopilot 自身のソース）が含まれる。
-
-`Item.Author` は既に取得できているので、**候補を信頼できる作成者に限定する**のが最も低コストで効く対策である。
-
-```go
-// AllowedAuthors が非空の場合、そこに含まれる作成者の Issue/PR のみを候補にする。
-// 公開リポジトリで第三者が起票した本文が bypassPermissions の worker を
-// 駆動することを防ぐ（プロンプトインジェクション対策）。
-```
-
-加えて GitHub 側で既定ブランチのブランチ保護を有効にし、`GH_TOKEN` は fine-grained PAT で対象リポジトリのみに絞ることを推奨する。プロンプト側の禁止事項（後述 P-10）は多層防御の一枚目にすぎず、それ単体を頼ってはならない。
-
-### B-5. dispatcher が `bypassPermissions` で全ツールを持っている
-
-`runner.go:46` の `runArgs` は dispatcher / worker 共通で `--permission-mode bypassPermissions` を渡す。dispatcher は「判断のみを行い、実装や検証は行わない」（DESIGN.md 8章、プロンプトにも明記）はずなのに、実際には `StateDir`（= 全リポジトリの clone 置き場）を作業ディレクトリとして任意のコマンドを実行できる。
-
-haiku とはいえ、これは不要な権限であり、コストと事故の両面でリスクがある。`Options.ExtraArgs` に `--disallowed-tools`（あるいは `--allowed-tools` を空に相当する指定）を追加し、dispatcher はツール無しで動かすべきである。副次的に、無駄なツール呼び出しによるレイテンシとトークン消費も減る。
-
-### B-6. CI の状態を誰も見ていない
-
-DESIGN.md 8章は「PR が存在するか、**CI が通っているか**、未対応のレビュー指摘があるか — これらが真の状態である」と書いているが、check runs / commit status を取得するコードは無い。dispatcher は CI の合否を知らないまま `qa` を割り当てるか判断することになる。
-
-`GET /repos/{repo}/commits/{sha}/check-runs` の集約結果（success/failure/pending）を `DispatchCandidate` に足すのは安価で、効果が大きい。実装しないなら DESIGN.md から当該記述を落として、期待値を実装に合わせる。
-
 ---
 
 ## C. 中 (Medium)
