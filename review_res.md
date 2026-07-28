@@ -24,29 +24,9 @@
 
 ## A. 重大 (Critical)
 
-### A-4. `TimeoutStartSec=30m` が 5 リポジトリ分の直列実行を丸ごと覆っている
+(A-1, A-2, A-3, A-4 ともに対応完了)
 
-デプロイ側の実態:
-
-```nix
-ExecStart = "${lib.getExe pkg} --repos k-wa-wa/pechka,k-wa-wa/nuage-cluster,...";  # 5 リポジトリ
-TimeoutStartSec = "30m";
-```
-
-`main.go:68-83` はこの 5 リポジトリを **1 プロセス内で直列に**回す。各サイクルは最大 1 件の worker（dev なら数十分）を起動しうるので、30 分の予算は 1 リポジトリ目で使い切られうる。
-
-**帰結**
-
-1. リストの後方のリポジトリ（`bare-web-proxy`, `nuage-workspace`）は事実上ほとんど処理されない。順序による恒常的な飢餓が発生する。
-2. タイムアウト時、systemd は SIGTERM を送るが `main.go` は**シグナルを一切ハンドルしていない**（`context.Background()` を使用）。実行中の worker が強制終了され、`cycle.go:205` の `RemoveLabel` に到達しないため **`agent:running` が恒久的に残留する**。`hasAgentLabel` は `agent:` 接頭辞なら何でも除外するので、そのアイテムは人間が手で外すまで永久に対象外になる。
-3. DESIGN.md 8章は自動回収を「将来課題」と書いているが、上記の構成では**タイムアウトが例外ではなく通常運転**になるため、実質的に必須の課題である。
-
-**対処**
-
-- `signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)` を張り、キャンセル時に `agent:running` を確実に外してから終了する。`TimeoutStartSec` より短い `RuntimeMaxSec`、あるいは systemd の `TimeoutStopSec` の猶予内に収まるよう `cmd.WaitDelay` を調整する。
-- リポジトリごとに `context.WithTimeout` を張り、予算を分割する（例: 全体 30m を 5 分割ではなく、worker 起動は 1 プロセス 1 件までに制限する）。
-- あるいは DESIGN.md 6章の当初方針どおり **1 リポジトリ 1 unit** に戻す。飢餓もタイムアウト共有も同時に解消し、`RandomizedDelaySec` で負荷分散もできる。設計書の判断のほうが正しかったように見える。
-- timer が無い件は意図的なら DESIGN.md 7章に明記する（「導入直後の目視確認用」という `enableTimer` の説明が残っているので、暫定運用だと読める）。
+---
 
 ---
 
