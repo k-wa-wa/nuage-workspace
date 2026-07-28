@@ -28,8 +28,16 @@ let
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
 
-      # git / gh をサービスの PATH に含める。extraPackages で追加のツールチェーンを足せる。
-      path = [ pkgs.git pkgs.gh ] ++ cfg.extraPackages;
+      # git / gh をサービスの PATH に含める。
+      # extraPackages は Nix パッケージ、extraPathPrefixes は Nix 管理外の
+      # インストール先（公式インストーラで入れた claude / agy など）を通すための枠。
+      #
+      # environment.PATH を直接定義しないこと。NixOS の systemd モジュールが
+      # 全サービスに対して coreutils 等を含む environment.PATH を定義しており、
+      # 追加で定義すると値の衝突でエラーになる。path はリストとして正しくマージされる。
+      path = [ pkgs.git pkgs.gh ] ++ cfg.extraPackages ++ cfg.extraPathPrefixes;
+
+      environment.NUAGE_STATE_DIR = cfg.stateDir;
 
       serviceConfig = {
         Type = "oneshot";
@@ -42,8 +50,6 @@ let
 
         # ハングした場合の検知（旧 Supervisor の代替）。
         TimeoutStartSec = cfg.timeout;
-
-        Environment = "NUAGE_STATE_DIR=${cfg.stateDir}";
 
         ExecStart = "${lib.getExe cfg.package} --repo ${repo}";
 
@@ -139,7 +145,21 @@ in
     extraPackages = mkOption {
       type = types.listOf types.package;
       default = [ ];
-      description = "サービスの `path`（実行時 PATH）に追加するツール。";
+      description = "サービスの実行時 PATH に追加する Nix パッケージ。";
+    };
+
+    extraPathPrefixes = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "/home/nixos/.local" ];
+      description = ''
+        Nix パッケージになっていない CLI（公式インストーラで導入した claude / agy など）を
+        サービスの実行時 PATH に通すためのディレクトリ。
+
+        NixOS の `systemd.services.<name>.path` の仕様により、各要素の末尾に `/bin` と
+        `/sbin` が付与されて PATH に追加される。したがって `/home/nixos/.local/bin` を
+        通したい場合は、その親である `/home/nixos/.local` を指定する。
+      '';
     };
   };
 
