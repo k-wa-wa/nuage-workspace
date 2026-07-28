@@ -127,6 +127,21 @@ in
       description = "systemd の `OnCalendar` 形式で指定する実行間隔。";
     };
 
+    enableTimer = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        タイマーによる定期実行を行うかどうか。
+
+        false にしてもサービス本体の unit は生成されるため、
+        `systemctl start nuage-autopilot-<repo>.service` で手動実行できる。
+        導入直後や挙動を変更した直後など、まず 1 サイクルを目視で確認したい場合に false にする。
+
+        `systemctl stop ...timer` で止める運用にしないこと。
+        次回の nixos-rebuild で構成が復元され、意図せず定期実行が再開される。
+      '';
+    };
+
     environmentFile = mkOption {
       type = types.str;
       default = "-/var/lib/nuage-autopilot/secrets.env";
@@ -171,7 +186,9 @@ in
       }
     ];
 
+    # サービス本体は enableTimer の値によらず常に生成する。
+    # タイマーを止めていても systemctl start で手動実行できるようにするため。
     systemd.services = listToAttrs (map mkRepoService cfg.repositories);
-    systemd.timers = listToAttrs (map mkRepoTimer cfg.repositories);
+    systemd.timers = mkIf cfg.enableTimer (listToAttrs (map mkRepoTimer cfg.repositories));
   };
 }
