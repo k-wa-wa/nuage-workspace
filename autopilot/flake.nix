@@ -27,7 +27,7 @@
             pname = "nuage-autopilot";
             version = "0.1.0";
 
-            src = ./autopilot;
+            src = ./.;
 
             ldflags = [ "-X main.version=0.1.0" ];
 
