@@ -13,6 +13,7 @@
 | `nuage-monitoring-stack` | `../nuage-monitoring-stack` | 監視スタック（Prometheus, Grafana, Alertmanager 等）の設定管理 |
 | `pechka` | `../pechka` | アプリケーションサービス |
 | `bare-web-proxy` | `../bare-web-proxy` | リバースプロキシおよびフロントエンドルーティング管理 |
+| `nuage-autopilot` | `../nuage-autopilot` | GitHub Issue/PR 駆動の自律開発オートパイロットサービス |
 
 各リポジトリで詳細な作業を開始する前に、必ずそのリポジトリ直下にある `AGENTS.md` を読み込み、固有のルールや最新のコマンド仕様を把握すること。
 
