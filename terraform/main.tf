@@ -4,8 +4,11 @@ import {
 }
 
 resource "github_repository" "nuage_workspace" {
-  name        = "nuage-workspace"
-  description = ""
+  name         = "nuage-workspace"
+  description  = ""
+  has_issues   = true
+  has_projects = true
+  has_wiki     = true
 }
 
 resource "github_repository_collaborator" "nuage_workspace_collaborator" {
