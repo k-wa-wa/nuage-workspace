@@ -23,6 +23,12 @@
 
 システム全体が GitOps 原則に基づいて管理されている。場当たり的な環境直接の書き換え（例: `kubectl edit` による直接編集）は恒久対応とせず、必ず各ソースコードを変更した上で GitOps 経路にて適用する。
 
+### クラスタ調査用の kubectl アクセス（read-only）
+
+`nuage-autopilot` の実行環境（autopilot-server）には、クラスタ調査専用の read-only ServiceAccount による kubeconfig が配布されている（発行元は `../nuage-cluster/manifests/apps/autopilot/`、詳細は k-wa-wa/nuage-workspace#8）。権限は `get`/`list`/`watch` のみで、`secrets` リソースは対象外、対象範囲は全namespaceである。
+
+この kubectl アクセスは、アラート起点で起票された Issue についてどのリポジトリ・ファイルを直せば解決するかをエージェント自身がクラスタの実態を見て特定するための**調査目的専用**である。read-only 権限のため書き込み系操作は原理的に不可能だが、権限があっても `kubectl apply`/`kubectl edit`/`kubectl delete` 等でクラスタを直接変更しようとしてはならない。変更は必ず本節冒頭の GitOps 原則に従い、各リポジトリのソースを修正した上で PR 経由で適用すること。
+
 ### 適用経路の早見表
 
 | 資材 | 適用経路 |
