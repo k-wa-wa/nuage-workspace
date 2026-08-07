@@ -1,0 +1,111 @@
+name: Docker Build and Push (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: "docker build のビルドコンテキスト"
+        type: string
+        default: "."
+      image:
+        description: "push先イメージ名 (例: ghcr.io/${{ github.repository }})"
+        type: string
+        required: true
+      go-version:
+        description: "指定した場合、docker buildの前にこのバージョンのGoをセットアップする"
+        type: string
+        default: ""
+      setup-run:
+        description: "docker buildの前に実行する追加コマンド (例: go mod vendor)"
+        type: string
+        default: ""
+      require-same-repo-pr:
+        description: "forkからのPRではジョブをスキップするかどうか"
+        type: boolean
+        default: true
+      pr-comment-marker:
+        description: "PRコメントの検索・更新に使うマーカー文字列。空の場合はコメント投稿を行わない"
+        type: string
+        default: ""
+      pr-comment-body:
+        description: "PRに投稿するコメント本文 (Markdown)"
+        type: string
+        default: ""
+
+jobs:
+  build-and-push:
+    name: Build and Push
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+      (github.event_name == 'pull_request' && (!inputs.require-same-repo-pr || github.event.pull_request.head.repo.full_name == github.repository))
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        if: inputs.go-version != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: Run setup command
+        if: inputs.setup-run != ''
+        run: ${{ inputs.setup-run }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine image tags
+        id: tags
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            SUFFIX="pr-${{ github.event.pull_request.number }}"
+            SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            SUFFIX="latest"
+            SHA="${{ github.sha }}"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "${{ inputs.image }}:${SUFFIX}"
+            echo "${{ inputs.image }}:sha-${SHA}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Upsert PR comment
+        if: github.event_name == 'pull_request' && inputs.pr-comment-marker != '' && inputs.pr-comment-body != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MARKER: ${{ inputs.pr-comment-marker }}
+          COMMENT_BODY: ${{ inputs.pr-comment-body }}
+        run: |
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --jq '.[] | select(.body | contains(env.MARKER)) | .id' | head -n 1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" -f body="$COMMENT_BODY"
+          else
+            gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" -f body="$COMMENT_BODY"
+          fi
