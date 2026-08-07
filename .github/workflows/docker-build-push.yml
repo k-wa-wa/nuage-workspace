@@ -8,7 +8,7 @@ on:
         type: string
         default: "."
       image:
-        description: "push先イメージ名 (例: ghcr.io/${{ github.repository }})"
+        description: "push先イメージ名 (例: ghcr.io/owner/repo)"
         type: string
         required: true
       go-version:
