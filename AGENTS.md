@@ -13,7 +13,7 @@
 | `nuage-monitoring-stack` | `../nuage-monitoring-stack` | 監視スタック（Prometheus, Grafana, Alertmanager 等）の設定管理 |
 | `pechka` | `../pechka` | アプリケーションサービス |
 | `bare-web-proxy` | `../bare-web-proxy` | リバースプロキシおよびフロントエンドルーティング管理 |
-| `nuage-autopilot` | `../nuage-autopilot` | GitHub Issue/PR 駆動の自律開発オートパイロットサービス |
+| `nuage-autopilot2` | `../nuage-autopilot2` | GitHub Projects 駆動の自律開発オートパイロットサービス |
 
 各リポジトリで詳細な作業を開始する前に、必ずそのリポジトリ直下にある `AGENTS.md` を読み込み、固有のルールや最新のコマンド仕様を把握すること。
 
@@ -53,7 +53,15 @@
 
 ---
 
-## 5. 制約事項
+## 5. 共通 GitHub Actions Reusable Workflow
+
+`.github/workflows/docker-build-push.yml` は、Docker イメージのビルド・GHCR への push・PR プレビューコメントの投稿をまとめた reusable workflow である。`pechka`, `bare-web-proxy`, `nuage-monitoring-stack` など複数リポジトリで同一内容がコピペされていた処理を集約したもので、各リポジトリからは `workflow_call` で 10 行程度の呼び出しに縮める。
+
+呼び出し側のワークフローには `permissions: contents: read / packages: write / pull-requests: write` を明示する必要がある。
+
+---
+
+## 6. 制約事項
 
 - **SOPS操作の禁止**:
   特別な指示がない限り、SOPS を用いたシークレットファイルの作成・編集・復号は実行しないこと。ユーザーにファイルの作成や編集を促すこと。

@@ -21,8 +21,8 @@
       "path": "../bare-web-proxy"
     },
     {
-      "name": "nuage-autopilot",
-      "path": "../nuage-autopilot"
+      "name": "nuage-autopilot2",
+      "path": "../nuage-autopilot2"
     }
   ],
   "settings": {}
