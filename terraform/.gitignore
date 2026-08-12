@@ -1,6 +1,7 @@
 
 .terraform
 terraform.tfstate*
+.terraform.tfstate*
 
 backend.tf
 provider.tf

@@ -79,3 +79,17 @@ module "nuage_autopilot" {
     description = "Issue駆動の完全自律開発エージェント"
   }
 }
+
+#####
+
+import {
+  id = "nuage-autopilot2"
+  to = module.nuage_autopilot2.github_repository.repository
+}
+module "nuage_autopilot2" {
+  source = "./modules/repo"
+  repository_config = {
+    name        = "nuage-autopilot2"
+    description = "Github Projects駆動の自律開発エージェント"
+  }
+}
