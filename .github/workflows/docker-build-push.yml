@@ -7,6 +7,10 @@ on:
         description: "docker build のビルドコンテキスト"
         type: string
         default: "."
+      file:
+        description: "Dockerfile のパス。空の場合は context 直下の Dockerfile を使う"
+        type: string
+        default: ""
       image:
         description: "push先イメージ名 (例: ghcr.io/owner/repo)"
         type: string
@@ -70,6 +74,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
