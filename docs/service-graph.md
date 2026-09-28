@@ -21,7 +21,7 @@ flowchart TD
         subgraph IngressLayer["Cilium Ingress Routing"]
             Ing_1["hubble.cluster.wpc"]
             Ing_2["autopilot-ui.wpcapp.net"]
-            Ing_3["argocd.cluster.wpc"]
+            Ing_3["argocd.wpcapp.net"]
             Ing_4["bwproxy.wpcapp.net"]
             Ing_5["pechka.wpcapp.net"]
             Ing_6["pechka-workflow.wpcapp.net"]
@@ -73,7 +73,7 @@ flowchart TD
 
     CoreDNS_Internal --> Ing_1
     CF_Public --> Ing_2
-    CoreDNS_Internal --> Ing_3
+    CF_Public --> Ing_3
     CF_Public --> Ing_4
     CF_Public --> Ing_5
     CF_Public --> Ing_6
@@ -82,7 +82,6 @@ flowchart TD
 
     Ing_1 -->|/| Hubble_UI
     Ing_2 -->|/| Svc_AutoUI
-    Ing_3 -->|/| ArgoCD_Server
     Ing_4 -->|/| BWP_Svc
     Ing_5 -->|/| Nginx
     Ing_6 -->|/| Argo_Workflow
