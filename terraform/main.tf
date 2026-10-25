@@ -93,3 +93,32 @@ module "nuage_autopilot5" {
     description = ""
   }
 }
+
+#####
+
+import {
+  id = "nuage-usage-ledger"
+  to = module.nuage_usage_ledger.github_repository.repository
+}
+module "nuage_usage_ledger" {
+  source = "./modules/repo"
+  repository_config = {
+    name        = "nuage-usage-ledger"
+    description = ""
+  }
+}
+
+#####
+
+import {
+  id = "cicerone3270"
+  to = module.cicerone3270.github_repository.repository
+}
+module "cicerone3270" {
+  source = "./modules/repo"
+  repository_config = {
+    name        = "cicerone3270"
+    description = ""
+  }
+}
+
