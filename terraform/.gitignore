@@ -6,5 +6,3 @@ terraform.tfstate*
 
 backend.tf
 provider.tf
-
-secrets.yaml
