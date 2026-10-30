@@ -122,3 +122,16 @@ module "cicerone3270" {
   }
 }
 
+#####
+
+import {
+  id = "nuage-dr"
+  to = module.nuage_dr.github_repository.repository
+}
+module "nuage_dr" {
+  source = "./modules/repo"
+  repository_config = {
+    name        = "nuage-dr"
+    description = ""
+  }
+}
