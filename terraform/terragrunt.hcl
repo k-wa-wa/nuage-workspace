@@ -1,5 +1,6 @@
 locals {
-  secrets = yamldecode(file("${get_terragrunt_dir()}/secrets.yaml"))
+  env_token = get_env("GITHUB_TOKEN", "")
+  token     = local.env_token != "" ? local.env_token : run_cmd("--terragrunt-quiet", "gh", "auth", "token")
 }
 
 generate "provider" {
@@ -16,7 +17,8 @@ terraform {
 }
 
 provider "github" {
-  token = "${local.secrets.gh_token}"
+  owner = "k-wa-wa"
+  token = "${local.token}"
 }
 EOF
 }

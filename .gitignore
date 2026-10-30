@@ -3,3 +3,5 @@
 graphify-out
 autopilot/secrets.env
 secrets.env
+
+.terragrunt-cache
