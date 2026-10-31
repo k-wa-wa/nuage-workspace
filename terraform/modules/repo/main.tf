@@ -28,7 +28,7 @@ resource "github_repository_ruleset" "repository_ruleset" {
 
   bypass_actors {
     actor_type  = "RepositoryRole"
-    bypass_mode = "always"
+    bypass_mode = var.bypass_mode
     actor_id    = 5
   }
 
@@ -41,5 +41,21 @@ resource "github_repository_ruleset" "repository_ruleset" {
     }
 
     non_fast_forward = true
+
+    dynamic "required_status_checks" {
+      for_each = length(var.required_status_checks) > 0 ? [1] : []
+      content {
+        strict_required_status_checks_policy = false
+
+        dynamic "required_check" {
+          for_each = toset(var.required_status_checks)
+          content {
+            context = required_check.value
+            # GitHub Actions のアプリに固定する。固定しないと commit status の API で同名の成功を書き込めてしまう。
+            integration_id = 15368
+          }
+        }
+      }
+    }
   }
 }
