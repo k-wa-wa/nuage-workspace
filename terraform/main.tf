@@ -135,5 +135,5 @@ module "nuage_dr" {
     description = ""
   }
   bypass_mode            = "pull_request"
-  required_status_checks = ["check", "build-pi-nas"]
+  required_status_checks = ["check", "build-dr-nas"]
 }
