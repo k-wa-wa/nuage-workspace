@@ -18,7 +18,6 @@
 | `nuage-monitoring-stack` | 監視スタックの k8s 資材と、監視用の PWA | Argo CD（nuage-cluster の `manifests/apps/multi-repo-deploy.yaml`） |
 | `pechka` | ホームメディア基盤。NAS などからコンテンツを取り込み、ブラウザで閲覧・配信する | Argo CD（`multi-repo-deploy.yaml`。PR のプレビューは `pechka-preview-appset.yaml`） |
 | `bare-web-proxy` | 通信量を減らす中継 Web プロキシ（Go + Headless Chrome）。エージェントの検索・ページ取得にも使う | Argo CD（`multi-repo-deploy.yaml`） |
-| `nuage-home` | アプリのハブ。音声（Gemini Live）とサンドボックスの会話を同じ仕組みで統制する | Argo CD（`multi-repo-deploy.yaml`） |
 | `nuage-usage-ledger` | メインフレーム（MVS 3.8j）で動く使用量の勘定系（JCL・COBOL・REXX） | nuage-cluster の flake input。mainframe に載る |
 | `cicerone3270` | 3270 端末を案内付きで操作する汎用の TUI | nuage-cluster の flake input。mainframe に `ci3270` として入る |
 | `nuage-autopilot5` | Orca の窓口から任された仕事を完走させる `autopilot-run` と、全エージェント共通のルール・スキル | nuage-cluster の flake input。atelier に入る |
