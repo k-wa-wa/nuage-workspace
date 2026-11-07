@@ -1,3 +1,5 @@
+#trivy:ignore:AVD-GIT-0001 公開リポジトリとして運用するため
+#trivy:ignore:GIT-0001
 resource "github_repository" "repository" {
   name         = var.repository_config.name
   description  = var.repository_config.description
