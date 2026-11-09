@@ -137,3 +137,17 @@ module "nuage_dr" {
   bypass_mode            = "pull_request"
   required_status_checks = ["check", "build-dr-nas"]
 }
+
+#####
+
+import {
+  id = "nuage-honeytrap"
+  to = module.nuage_honeytrap.github_repository.repository
+}
+module "nuage_honeytrap" {
+  source = "./modules/repo"
+  repository_config = {
+    name        = "nuage-honeytrap"
+    description = ""
+  }
+}

@@ -18,14 +18,9 @@ gh auth login --web -s repo
 
 ### 2. 計画・適用の実行
 
-`gh auth token` から取得した一時トークンを環境変数に渡して実行する。
-
 ```bash
-# Plan の確認
-GITHUB_TOKEN=$(gh auth token) terragrunt plan
-
 # 変更の適用
-GITHUB_TOKEN=$(gh auth token) terragrunt apply
+terragrunt --working-dir terraform/ apply
 ```
 
 ### 3. 作業終了（トークンの破棄）
