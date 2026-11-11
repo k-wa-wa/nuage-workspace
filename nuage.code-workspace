@@ -23,6 +23,10 @@
     {
       "name": "nuage-autopilot5",
       "path": "../nuage-autopilot5"
+    },
+    {
+      "name": "nuage-honeytrap",
+      "path": "../nuage-honeytrap"
     }
   ],
   "settings": {}
