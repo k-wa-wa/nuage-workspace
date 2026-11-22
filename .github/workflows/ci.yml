@@ -1,0 +1,89 @@
+name: Validate Policies and Workflows
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+jobs:
+  policy-test:
+    name: Rego Policy Unit Tests & Workflow Lint
+    runs-on: ubuntu-latest
+    env:
+      OPA_VERSION: "v1.16.2"
+      OPA_SHA256: "4ab4b89c131e6df3fed28b0b164083b6641ad67c86ab4c12d417ecfb93838ef1"
+      CONFTEST_VERSION: "v0.71.1"
+      CONFTEST_SHA256: "c3f6b2a753bd56e377a1e51a95ae3e057f926f2e9139f7d5b5dfbbaf810f7985"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache policy tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/nuage-policy-tools
+          key: nuage-policy-tools-${{ runner.os }}-${{ env.OPA_VERSION }}-${{ env.CONFTEST_VERSION }}
+
+      - name: Install OPA and Conftest
+        run: |
+          set -euo pipefail
+          BIN_DIR="$HOME/.local/nuage-policy-tools"
+          mkdir -p "$BIN_DIR"
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
+
+          DL_DIR="${{ runner.temp }}/nuage-policy-dl"
+          mkdir -p "$DL_DIR"
+
+          if [ ! -x "$BIN_DIR/opa" ]; then
+            curl -sSfL "https://github.com/open-policy-agent/opa/releases/download/${OPA_VERSION}/opa_linux_amd64_static" \
+              -o "$DL_DIR/opa"
+            echo "${OPA_SHA256}  ${DL_DIR}/opa" | sha256sum -c -
+            install -m 0755 "$DL_DIR/opa" "$BIN_DIR/opa"
+          fi
+
+          if [ ! -x "$BIN_DIR/conftest" ]; then
+            CONFTEST_VER_NO_V="${CONFTEST_VERSION#v}"
+            curl -sSfL "https://github.com/open-policy-agent/conftest/releases/download/${CONFTEST_VERSION}/conftest_${CONFTEST_VER_NO_V}_Linux_x86_64.tar.gz" \
+              -o "$DL_DIR/conftest.tar.gz"
+            echo "${CONFTEST_SHA256}  ${DL_DIR}/conftest.tar.gz" | sha256sum -c -
+            tar -xz -f "$DL_DIR/conftest.tar.gz" -C "$BIN_DIR" conftest
+          fi
+
+          rm -rf "$DL_DIR"
+
+          if ! command -v yamllint >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends yamllint
+          fi
+
+          "$BIN_DIR/opa" version
+          "$BIN_DIR/conftest" --version
+          yamllint --version
+
+      - name: Run OPA unit tests
+        run: opa test .github/workflows/validate/k8s -v
+
+      - name: Run Conftest verify
+        run: conftest verify -p .github/workflows/validate/k8s
+
+      - name: Lint workflow YAML files
+        run: |
+          set -euo pipefail
+          CFG="${{ runner.temp }}/workflow-yamllint.yaml"
+          cat << 'EOF' > "$CFG"
+          extends: default
+          rules:
+            line-length: disable
+            document-start: disable
+            truthy:
+              allowed-values: ["true", "false", "on"]
+          EOF
+          yamllint -c "$CFG" .github/workflows

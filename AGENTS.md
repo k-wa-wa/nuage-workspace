@@ -72,9 +72,10 @@ NixOS に効く変更 (nuage-cluster の `nix/`、flake input のリポジトリ
 
 ## 5. 共通 GitHub Actions Reusable Workflow
 
-`.github/workflows/docker-build-push.yml` は、Docker イメージのビルド・GHCR への push・PR プレビューコメントの投稿をまとめた reusable workflow である。`pechka`, `bare-web-proxy`, `nuage-monitoring-stack` など複数リポジトリで同一内容がコピペされていた処理を集約したもので、各リポジトリからは `workflow_call` で 10 行程度の呼び出しに縮める。
+`nuage-workspace` は、複数リポジトリで共通利用する Reusable Workflow を `.github/workflows/` に持つ。概要と使い方は [.github/workflows/README.md](.github/workflows/README.md) を参照すること。
 
-呼び出し側のワークフローには `permissions: contents: read / packages: write / pull-requests: write` を明示する必要がある。
+- `.github/workflows/docker-build-push.yml`: Docker イメージのビルド・Trivy 脆弱性スキャン・GHCR への push・PR プレビューコメント投稿を行う（`permissions: contents: read / packages: write / pull-requests: write` が必要）。
+- `.github/workflows/k8s-validate.yml`: `yamllint`・`kustomize build`・`kubeconform`・`pluto` および `.github/workflows/validate/k8s/` の Conftest（Rego）ポリシーによる k8s マニフェスト検証を行う。
 
 ---
 

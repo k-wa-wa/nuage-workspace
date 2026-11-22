@@ -27,6 +27,18 @@ on:
         description: "PRに投稿するコメント本文 (Markdown)"
         type: string
         default: ""
+      scan-severity:
+        description: "push をブロックする Trivy 脆弱性重大度 (カンマ区切り)"
+        type: string
+        default: "CRITICAL"
+      ignore-unfixed:
+        description: "修正パッチが存在しない脆弱性を無視するか"
+        type: boolean
+        default: true
+      trivy-ignore-file:
+        description: ".trivyignore ファイルのパス (存在する場合のみ適用)"
+        type: string
+        default: ".trivyignore"
 
 jobs:
   build-and-push:
@@ -46,13 +58,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Determine image tags
         id: tags
         run: |
@@ -63,22 +68,137 @@ jobs:
             SUFFIX="latest"
             SHA="${{ github.sha }}"
           fi
+          PRIMARY_TAG="${{ inputs.image }}:${SUFFIX}"
           {
+            echo "primary_tag=${PRIMARY_TAG}"
             echo "tags<<EOF"
-            echo "${{ inputs.image }}:${SUFFIX}"
+            echo "${PRIMARY_TAG}"
             echo "${{ inputs.image }}:sha-${SHA}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push Docker image
+      - name: Build Docker image (local load for scanning)
         uses: docker/build-push-action@v5
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.file }}
-          push: true
+          push: false
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Resolve Trivy ignore file
+        id: trivy-cfg
+        env:
+          TRIVY_IGNORE_FILE: ${{ inputs.trivy-ignore-file }}
+        run: |
+          if [ -n "$TRIVY_IGNORE_FILE" ] && [ -f "$TRIVY_IGNORE_FILE" ]; then
+            echo "trivyignores=$TRIVY_IGNORE_FILE" >> "$GITHUB_OUTPUT"
+            echo "Using trivy ignore file: $TRIVY_IGNORE_FILE"
+          else
+            echo "trivyignores=" >> "$GITHUB_OUTPUT"
+            echo "No trivy ignore file found at '$TRIVY_IGNORE_FILE'; proceeding without ignore file."
+          fi
+
+      - name: Scan image (full report for Step Summary)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.tags.outputs.primary_tag }}
+          format: json
+          output: trivy-results.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: ${{ inputs.ignore-unfixed }}
+          trivyignores: ${{ steps.trivy-cfg.outputs.trivyignores }}
+          exit-code: "0"
+
+      - name: Write Trivy vulnerability summary
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.primary_tag }}
+          BLOCK_SEVERITY: ${{ inputs.scan-severity }}
+          IGNORE_UNFIXED: ${{ inputs.ignore-unfixed }}
+        run: |
+          set -euo pipefail
+          REPORT="trivy-results.json"
+          {
+            echo "### Trivy Vulnerability Scan: \`${IMAGE_REF}\`"
+            echo ""
+            echo "- ブロック基準重大度: \`${BLOCK_SEVERITY}\`"
+            echo "- \`ignore-unfixed\`: \`${IGNORE_UNFIXED}\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -f "$REPORT" ]; then
+            echo "Trivy レポートが生成されなかったためサマリを省略する。" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          jq -r --arg block "$BLOCK_SEVERITY" '
+            [(.Results // [])[] | .Target as $target | (.Vulnerabilities // [])[] | {
+              target: $target,
+              id: .VulnerabilityID,
+              pkg: .PkgName,
+              installed: .InstalledVersion,
+              fixed: (.FixedVersion // "-"),
+              severity: (.Severity // "UNKNOWN")
+            }] as $vulns
+            | ($block | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $block_list
+            | (["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"] | map(
+                . as $sev | {
+                  severity: $sev,
+                  count: ($vulns | map(select(.severity == $sev)) | length),
+                  action: (if ($block_list | index($sev)) != null then "BLOCK" else "WARN" end)
+                }
+              )) as $counts
+            | "#### 重大度別サマリ\n\n| Severity | Count | Policy |\n| :--- | ---: | :--- |\n"
+              + ($counts | map("| \(.severity) | \(.count) | \(.action) |") | join("\n"))
+              + "\n\n"
+              + (
+                ($vulns | map(select(.severity as $s | ($block_list | index($s)) == null))) as $non_blocking
+                | if ($non_blocking | length) == 0 then
+                    "ブロック対象外の脆弱性は検出されなかった。"
+                  else
+                    "#### 警告 (ブロック対象外: 最大30件表示)\n\n| Severity | CVE | Package | Installed | Fixed | Target |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+                    + ($non_blocking | .[0:30] | map("| \(.severity) | \(.id) | \(.pkg) | \(.installed) | \(.fixed) | \(.target) |") | join("\n"))
+                    + (if ($non_blocking | length) > 30 then "\n\n... 他 \(($non_blocking | length) - 30) 件の警告あり。" else "" end)
+                  end
+              )
+          ' "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+
+          rm -f "$REPORT"
+
+      - name: Enforce Trivy vulnerability gate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.tags.outputs.primary_tag }}
+          format: table
+          severity: ${{ inputs.scan-severity }}
+          ignore-unfixed: ${{ inputs.ignore-unfixed }}
+          trivyignores: ${{ steps.trivy-cfg.outputs.trivyignores }}
+          exit-code: "1"
+        env:
+          TRIVY_SKIP_DB_UPDATE: "true"
+          TRIVY_SKIP_JAVA_DB_UPDATE: "true"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Docker image
+        env:
+          IMAGE_TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              echo "Pushing $tag"
+              docker push "$tag"
+            fi
+          done <<< "$IMAGE_TAGS"
 
       - name: Upsert PR comment
         if: github.event_name == 'pull_request' && inputs.pr-comment-marker != '' && inputs.pr-comment-body != ''
