@@ -46,3 +46,29 @@ jobs:
       prod-overlays: "k8s/overlays/prod"
       preview-overlays: "k8s/overlays/preview"
 ```
+
+#### ローカル実行（各リポジトリの `k8s/lint.sh`）
+
+同じ検証処理をローカルの `k8s/lint.sh` からも実行できる。手元に `nuage-workspace` がある場合はローカルの [run.sh](validate/k8s/run.sh) を使い、無い場合は `master` から一時取得する。
+
+```bash
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash -p kustomize kubeconform pluto conftest jq yamllint -I nixpkgs=channel:nixpkgs-unstable
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+LOCAL_RUNNER="${HOME}/ghq/github.com/k-wa-wa/nuage-workspace/.github/workflows/validate/k8s/run.sh"
+if [ -x "$LOCAL_RUNNER" ]; then
+  RUNNER="$LOCAL_RUNNER"
+else
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  curl -sSfL "https://github.com/k-wa-wa/nuage-workspace/archive/refs/heads/master.tar.gz" \
+    | tar -xz -C "$TMP_DIR" "nuage-workspace-master/.github/workflows/validate/k8s"
+  RUNNER="${TMP_DIR}/nuage-workspace-master/.github/workflows/validate/k8s/run.sh"
+fi
+
+# 必要に応じて環境変数（PROD_OVERLAYS / PREVIEW_OVERLAYS / YAMLLINT_PATH 等）や引数を指定する
+"$RUNNER"
+```

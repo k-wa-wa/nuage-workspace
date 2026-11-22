@@ -32,7 +32,7 @@ on:
         type: boolean
         default: true
       policy-ref:
-        description: "ポリシー定義を取得する nuage-workspace の ref"
+        description: "ポリシー定義および検証スクリプト（run.sh）を取得する nuage-workspace の ref（workflow の ref と揃えること）"
         type: string
         default: "master"
       require-same-repo-pr:
@@ -143,151 +143,13 @@ jobs:
           "$BIN_DIR/conftest" --version
           yamllint --version
 
-      - name: Run yamllint
-        if: inputs.yamllint-path != ''
+      - name: Run K8s validation
         env:
           YAMLLINT_PATH: ${{ inputs.yamllint-path }}
-        run: |
-          set -euo pipefail
-          if [ ! -e "$YAMLLINT_PATH" ]; then
-            echo "❌ yamllint target '$YAMLLINT_PATH' does not exist." >&2
-            exit 1
-          fi
-
-          if [ -f ".yamllint" ] || [ -f ".yamllint.yml" ] || [ -f ".yamllint.yaml" ]; then
-            yamllint "$YAMLLINT_PATH"
-          else
-            DEFAULT_CFG="${{ runner.temp }}/default-yamllint.yaml"
-            cat << 'EOF' > "$DEFAULT_CFG"
-          extends: default
-          rules:
-            line-length: disable
-            document-start: disable
-            empty-lines: disable
-            trailing-spaces: disable
-            comments:
-              min-spaces-from-content: 1
-          EOF
-            echo "No .yamllint found; using Nuage fallback configuration."
-            yamllint -c "$DEFAULT_CFG" "$YAMLLINT_PATH"
-          fi
-
-      - name: Validate Kustomize overlays and policies
-        env:
           PROD_OVERLAYS: ${{ inputs.prod-overlays }}
           PREVIEW_OVERLAYS: ${{ inputs.preview-overlays }}
           ENABLE_HELM: ${{ inputs.enable-helm }}
           OWN_IMAGE_PREFIXES: ${{ inputs.own-image-prefixes }}
           EXCLUDE_HELM_MANAGED: ${{ inputs.exclude-helm-managed }}
           FAIL_ON_POLICY: ${{ inputs.fail-on-policy }}
-        run: |
-          set -euo pipefail
-
-          WORK_DIR="${{ runner.temp }}/k8s-validate"
-          mkdir -p "$WORK_DIR"
-
-          POLICY_FAILED=0
-          VALIDATED_COUNT=0
-
-          {
-            echo "### Kubernetes Manifest Validation"
-            echo ""
-            echo "- \`fail-on-policy\`: \`${FAIL_ON_POLICY}\`"
-            echo "- \`own-image-prefixes\`: \`${OWN_IMAGE_PREFIXES}\`"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          parse_overlays() {
-            printf '%s\n' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' || true
-          }
-
-          validate_overlay() {
-            local env_name="$1"
-            local overlay="$2"
-
-            if [ ! -d "$overlay" ]; then
-              echo "❌ Overlay directory '$overlay' (env=$env_name) does not exist." >&2
-              exit 1
-            fi
-
-            VALIDATED_COUNT=$((VALIDATED_COUNT + 1))
-
-            echo "========================================"
-            echo "Validating $overlay (env=$env_name)"
-            echo "========================================"
-
-            local rendered="${WORK_DIR}/rendered-${env_name}.yaml"
-            local kustomize_args=()
-            if [ "$ENABLE_HELM" = "true" ]; then
-              kustomize_args+=(--enable-helm)
-            fi
-
-            kustomize build "${kustomize_args[@]}" "$overlay" > "$rendered"
-
-            echo "--- kubeconform ---"
-            kubeconform -summary -strict -ignore-missing-schemas \
-              -schema-location default \
-              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-              "$rendered"
-
-            echo "--- pluto ---"
-            pluto detect "$rendered"
-
-            echo "--- conftest ($env_name) ---"
-            local data_json="${WORK_DIR}/policy-data.json"
-            jq -n \
-              --arg env "$env_name" \
-              --arg prefixes "$OWN_IMAGE_PREFIXES" \
-              --argjson exclude_helm "$EXCLUDE_HELM_MANAGED" \
-              '{
-                env: $env,
-                own_image_prefixes: ($prefixes | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))),
-                exclude_helm_managed: $exclude_helm
-              }' > "$data_json"
-
-            local conftest_out="${WORK_DIR}/conftest.out"
-            local conftest_rc=0
-            conftest test --no-color --combine --all-namespaces \
-              -p .nuage-workspace-policies/.github/workflows/validate/k8s \
-              -d "$data_json" \
-              "$rendered" > "$conftest_out" 2>&1 || conftest_rc=$?
-
-            cat "$conftest_out"
-
-            {
-              echo "#### \`${overlay}\` (\`env=${env_name}\`)"
-              echo ""
-              echo '```text'
-              cat "$conftest_out"
-              echo '```'
-              echo ""
-            } >> "$GITHUB_STEP_SUMMARY"
-
-            if [ "$conftest_rc" -ne 0 ]; then
-              POLICY_FAILED=1
-            fi
-          }
-
-          while IFS= read -r overlay; do
-            validate_overlay "prod" "$overlay"
-          done < <(parse_overlays "$PROD_OVERLAYS")
-
-          while IFS= read -r overlay; do
-            validate_overlay "preview" "$overlay"
-          done < <(parse_overlays "$PREVIEW_OVERLAYS")
-
-          if [ "$VALIDATED_COUNT" -eq 0 ]; then
-            echo "❌ No Kustomize overlays were validated. Specify prod-overlays and/or preview-overlays." >&2
-            exit 1
-          fi
-
-          if [ "$POLICY_FAILED" -ne 0 ]; then
-            if [ "$FAIL_ON_POLICY" = "true" ]; then
-              echo "❌ Conftest policy violations detected."
-              exit 1
-            else
-              echo "⚠️ Conftest policy violations detected, but fail-on-policy=false so continuing with warnings."
-              echo "> [!WARNING]" >> "$GITHUB_STEP_SUMMARY"
-              echo "> ポリシー違反が検出されたが \`fail-on-policy: false\` のため警告のみで通過させた。" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          fi
+        run: .nuage-workspace-policies/.github/workflows/validate/k8s/run.sh

@@ -87,3 +87,94 @@ jobs:
               allowed-values: ["true", "false", "on"]
           EOF
           yamllint -c "$CFG" .github/workflows
+
+  runner-test:
+    name: K8s Validate Runner Lint & Smoke Test
+    runs-on: ubuntu-latest
+    env:
+      KUSTOMIZE_VERSION: "v5.8.3"
+      KUSTOMIZE_SHA256: "cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61"
+      KUBECONFORM_VERSION: "v0.8.0"
+      KUBECONFORM_SHA256: "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
+      PLUTO_VERSION: "v5.24.5"
+      PLUTO_SHA256: "80076e01a320e1f4db30f5dbc927d204e61cd8abed66fa0b4644ca61cd86b39e"
+      CONFTEST_VERSION: "v0.71.1"
+      CONFTEST_SHA256: "c3f6b2a753bd56e377a1e51a95ae3e057f926f2e9139f7d5b5dfbbaf810f7985"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check shell syntax and ShellCheck
+        run: |
+          set -euo pipefail
+          bash -n .github/workflows/validate/k8s/run.sh
+          bash -n .github/workflows/validate/k8s/tests/smoke-test.sh
+          shellcheck .github/workflows/validate/k8s/run.sh .github/workflows/validate/k8s/tests/smoke-test.sh
+
+      - name: Cache K8s validation binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/nuage-k8s-tools
+          key: nuage-k8s-tools-${{ runner.os }}-${{ env.KUSTOMIZE_VERSION }}-${{ env.KUBECONFORM_VERSION }}-${{ env.PLUTO_VERSION }}-${{ env.CONFTEST_VERSION }}
+
+      - name: Install K8s validation tools
+        run: |
+          set -euo pipefail
+          BIN_DIR="$HOME/.local/nuage-k8s-tools"
+          mkdir -p "$BIN_DIR"
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
+
+          DL_DIR="${{ runner.temp }}/nuage-k8s-dl"
+          mkdir -p "$DL_DIR"
+
+          download_and_verify() {
+            local url="$1"
+            local expected_sha="$2"
+            local out_file="$3"
+            curl -sSfL "$url" -o "$out_file"
+            echo "${expected_sha}  ${out_file}" | sha256sum -c -
+          }
+
+          if [ ! -x "$BIN_DIR/kustomize" ]; then
+            download_and_verify \
+              "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+              "$KUSTOMIZE_SHA256" \
+              "$DL_DIR/kustomize.tar.gz"
+            tar -xz -f "$DL_DIR/kustomize.tar.gz" -C "$BIN_DIR" kustomize
+          fi
+
+          if [ ! -x "$BIN_DIR/kubeconform" ]; then
+            download_and_verify \
+              "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+              "$KUBECONFORM_SHA256" \
+              "$DL_DIR/kubeconform.tar.gz"
+            tar -xz -f "$DL_DIR/kubeconform.tar.gz" -C "$BIN_DIR" kubeconform
+          fi
+
+          if [ ! -x "$BIN_DIR/pluto" ]; then
+            PLUTO_VER_NO_V="${PLUTO_VERSION#v}"
+            download_and_verify \
+              "https://github.com/FairwindsOps/pluto/releases/download/${PLUTO_VERSION}/pluto_${PLUTO_VER_NO_V}_linux_amd64.tar.gz" \
+              "$PLUTO_SHA256" \
+              "$DL_DIR/pluto.tar.gz"
+            tar -xz -f "$DL_DIR/pluto.tar.gz" -C "$BIN_DIR" pluto
+          fi
+
+          if [ ! -x "$BIN_DIR/conftest" ]; then
+            CONFTEST_VER_NO_V="${CONFTEST_VERSION#v}"
+            download_and_verify \
+              "https://github.com/open-policy-agent/conftest/releases/download/${CONFTEST_VERSION}/conftest_${CONFTEST_VER_NO_V}_Linux_x86_64.tar.gz" \
+              "$CONFTEST_SHA256" \
+              "$DL_DIR/conftest.tar.gz"
+            tar -xz -f "$DL_DIR/conftest.tar.gz" -C "$BIN_DIR" conftest
+          fi
+
+          rm -rf "$DL_DIR"
+
+          if ! command -v yamllint >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends yamllint
+          fi
+
+      - name: Run K8s validation smoke tests
+        run: .github/workflows/validate/k8s/tests/smoke-test.sh
