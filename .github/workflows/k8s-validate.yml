@@ -1,0 +1,256 @@
+name: Kubernetes Manifest Validate (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      yamllint-path:
+        description: "yamllint を実行する対象パス（空の場合はスキップ）"
+        type: string
+        default: "k8s"
+      prod-overlays:
+        description: "prod 環境として検証する Kustomize オーバーレイパス（カンマまたは改行区切り、空の場合はスキップ）"
+        type: string
+        default: "k8s/overlays/prod"
+      preview-overlays:
+        description: "preview 環境として検証する Kustomize オーバーレイパス（カンマまたは改行区切り、空の場合はスキップ）"
+        type: string
+        default: "k8s/overlays/preview"
+      enable-helm:
+        description: "kustomize build に --enable-helm を付与するか"
+        type: boolean
+        default: false
+      own-image-prefixes:
+        description: "自前イメージとみなすプレフィックス（カンマ区切り）"
+        type: string
+        default: "ghcr.io/k-wa-wa/"
+      exclude-helm-managed:
+        description: "Helm 管理リソースをワークロード品質ポリシーから除外するか"
+        type: boolean
+        default: true
+      fail-on-policy:
+        description: "Conftest ポリシー違反時にジョブを失敗させるか（false の場合は警告サマリのみ出力する）"
+        type: boolean
+        default: true
+      policy-ref:
+        description: "ポリシー定義を取得する nuage-workspace の ref"
+        type: string
+        default: "master"
+      require-same-repo-pr:
+        description: "fork からの PR ではジョブをスキップするかどうか"
+        type: boolean
+        default: true
+
+jobs:
+  validate:
+    name: Validate K8s Manifests
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name != 'pull_request') ||
+      (!inputs.require-same-repo-pr || github.event.pull_request.head.repo.full_name == github.repository)
+    permissions:
+      contents: read
+    env:
+      KUSTOMIZE_VERSION: "v5.8.3"
+      KUBECONFORM_VERSION: "v0.8.0"
+      PLUTO_VERSION: "v5.24.5"
+      CONFTEST_VERSION: "v0.71.1"
+    steps:
+      - name: Checkout calling repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Nuage K8s policies
+        uses: actions/checkout@v4
+        with:
+          repository: k-wa-wa/nuage-workspace
+          ref: ${{ inputs.policy-ref }}
+          sparse-checkout: policies/k8s
+          path: .nuage-workspace-policies
+          persist-credentials: false
+
+      - name: Cache K8s validation binaries
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/nuage-k8s-tools
+          key: nuage-k8s-tools-${{ runner.os }}-${{ env.KUSTOMIZE_VERSION }}-${{ env.KUBECONFORM_VERSION }}-${{ env.PLUTO_VERSION }}-${{ env.CONFTEST_VERSION }}
+
+      - name: Install K8s validation tools
+        run: |
+          set -euo pipefail
+          BIN_DIR="$HOME/.local/nuage-k8s-tools"
+          mkdir -p "$BIN_DIR"
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
+
+          if [ ! -x "$BIN_DIR/kustomize" ]; then
+            curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+              | tar -xz -C "$BIN_DIR" kustomize
+          fi
+
+          if [ ! -x "$BIN_DIR/kubeconform" ]; then
+            curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+              | tar -xz -C "$BIN_DIR" kubeconform
+          fi
+
+          if [ ! -x "$BIN_DIR/pluto" ]; then
+            PLUTO_VER_NO_V="${PLUTO_VERSION#v}"
+            curl -sSfL "https://github.com/FairwindsOps/pluto/releases/download/${PLUTO_VERSION}/pluto_${PLUTO_VER_NO_V}_linux_amd64.tar.gz" \
+              | tar -xz -C "$BIN_DIR" pluto
+          fi
+
+          if [ ! -x "$BIN_DIR/conftest" ]; then
+            CONFTEST_VER_NO_V="${CONFTEST_VERSION#v}"
+            curl -sSfL "https://github.com/open-policy-agent/conftest/releases/download/${CONFTEST_VERSION}/conftest_${CONFTEST_VER_NO_V}_Linux_x86_64.tar.gz" \
+              | tar -xz -C "$BIN_DIR" conftest
+          fi
+
+          if ! command -v yamllint >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends yamllint
+          fi
+
+          "$BIN_DIR/kustomize" version
+          "$BIN_DIR/kubeconform" -v
+          "$BIN_DIR/pluto" version
+          "$BIN_DIR/conftest" --version
+          yamllint --version
+
+      - name: Run yamllint
+        if: inputs.yamllint-path != ''
+        env:
+          YAMLLINT_PATH: ${{ inputs.yamllint-path }}
+        run: |
+          set -euo pipefail
+          if [ ! -e "$YAMLLINT_PATH" ]; then
+            echo "yamllint target '$YAMLLINT_PATH' does not exist. Skipping."
+            exit 0
+          fi
+
+          if [ -f ".yamllint" ] || [ -f ".yamllint.yml" ] || [ -f ".yamllint.yaml" ]; then
+            yamllint "$YAMLLINT_PATH"
+          else
+            DEFAULT_CFG="${{ runner.temp }}/default-yamllint.yaml"
+            cat << 'EOF' > "$DEFAULT_CFG"
+          extends: default
+          rules:
+            line-length: disable
+            document-start: disable
+            empty-lines: disable
+            trailing-spaces: disable
+            comments:
+              min-spaces-from-content: 1
+          EOF
+            echo "No .yamllint found; using Nuage fallback configuration."
+            yamllint -c "$DEFAULT_CFG" "$YAMLLINT_PATH"
+          fi
+
+      - name: Validate Kustomize overlays and policies
+        env:
+          PROD_OVERLAYS: ${{ inputs.prod-overlays }}
+          PREVIEW_OVERLAYS: ${{ inputs.preview-overlays }}
+          ENABLE_HELM: ${{ inputs.enable-helm }}
+          OWN_IMAGE_PREFIXES: ${{ inputs.own-image-prefixes }}
+          EXCLUDE_HELM_MANAGED: ${{ inputs.exclude-helm-managed }}
+          FAIL_ON_POLICY: ${{ inputs.fail-on-policy }}
+        run: |
+          set -euo pipefail
+
+          WORK_DIR="${{ runner.temp }}/k8s-validate"
+          mkdir -p "$WORK_DIR"
+
+          POLICY_FAILED=0
+
+          {
+            echo "### Kubernetes Manifest Validation"
+            echo ""
+            echo "- \`fail-on-policy\`: \`${FAIL_ON_POLICY}\`"
+            echo "- \`own-image-prefixes\`: \`${OWN_IMAGE_PREFIXES}\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          parse_overlays() {
+            printf '%s\n' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' || true
+          }
+
+          validate_overlay() {
+            local env_name="$1"
+            local overlay="$2"
+
+            if [ ! -d "$overlay" ]; then
+              echo "Directory '$overlay' (env=$env_name) does not exist. Skipping."
+              return 0
+            fi
+
+            echo "========================================"
+            echo "Validating $overlay (env=$env_name)"
+            echo "========================================"
+
+            local rendered="${WORK_DIR}/rendered-${env_name}.yaml"
+            local kustomize_args=()
+            if [ "$ENABLE_HELM" = "true" ]; then
+              kustomize_args+=(--enable-helm)
+            fi
+
+            kustomize build "${kustomize_args[@]}" "$overlay" > "$rendered"
+
+            echo "--- kubeconform ---"
+            kubeconform -summary -strict -ignore-missing-schemas \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              "$rendered"
+
+            echo "--- pluto ---"
+            pluto detect "$rendered"
+
+            echo "--- conftest ($env_name) ---"
+            local data_json="${WORK_DIR}/policy-data.json"
+            jq -n \
+              --arg env "$env_name" \
+              --arg prefixes "$OWN_IMAGE_PREFIXES" \
+              --argjson exclude_helm "$EXCLUDE_HELM_MANAGED" \
+              '{
+                env: $env,
+                own_image_prefixes: ($prefixes | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))),
+                exclude_helm_managed: $exclude_helm
+              }' > "$data_json"
+
+            local conftest_out="${WORK_DIR}/conftest.out"
+            local conftest_rc=0
+            conftest test --combine --all-namespaces \
+              -p .nuage-workspace-policies/policies/k8s \
+              -d "$data_json" \
+              "$rendered" > "$conftest_out" 2>&1 || conftest_rc=$?
+
+            cat "$conftest_out"
+
+            {
+              echo "#### \`${overlay}\` (\`env=${env_name}\`)"
+              echo ""
+              echo '```text'
+              cat "$conftest_out"
+              echo '```'
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            if [ "$conftest_rc" -ne 0 ]; then
+              POLICY_FAILED=1
+            fi
+          }
+
+          while IFS= read -r overlay; do
+            validate_overlay "prod" "$overlay"
+          done < <(parse_overlays "$PROD_OVERLAYS")
+
+          while IFS= read -r overlay; do
+            validate_overlay "preview" "$overlay"
+          done < <(parse_overlays "$PREVIEW_OVERLAYS")
+
+          if [ "$POLICY_FAILED" -ne 0 ]; then
+            if [ "$FAIL_ON_POLICY" = "true" ]; then
+              echo "❌ Conftest policy violations detected."
+              exit 1
+            else
+              echo "⚠️ Conftest policy violations detected, but fail-on-policy=false so continuing with warnings."
+              echo "> [!WARNING]" >> "$GITHUB_STEP_SUMMARY"
+              echo "> ポリシー違反が検出されたが \`fail-on-policy: false\` のため警告のみで通過させた。" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
