@@ -102,7 +102,7 @@ jobs:
           fi
 
       - name: Scan image (full report for Step Summary)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           scan-type: image
           image-ref: ${{ steps.tags.outputs.primary_tag }}
@@ -169,7 +169,7 @@ jobs:
           rm -f "$REPORT"
 
       - name: Enforce Trivy vulnerability gate
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           scan-type: image
           image-ref: ${{ steps.tags.outputs.primary_tag }}

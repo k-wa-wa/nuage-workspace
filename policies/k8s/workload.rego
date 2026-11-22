@@ -37,10 +37,18 @@ deny contains msg if {
 	some doc in docs
 	keel_target_deployment(doc)
 	annotations := object.get(object.get(doc, "metadata", {}), "annotations", {})
-	some key in ["keel.sh/policy", "keel.sh/trigger"]
-	val := object.get(annotations, key, "")
-	trim_space(val) == ""
-	msg := sprintf("%s: 自前イメージを利用する Deployment には %s アノテーションが必須である", [resource_id(doc), key])
+	policy := object.get(annotations, "keel.sh/policy", "")
+	policy != "force"
+	msg := sprintf("%s: 自前イメージを利用する Deployment には keel.sh/policy: \"force\" が必須である (現在: %q)", [resource_id(doc), policy])
+}
+
+deny contains msg if {
+	some doc in docs
+	keel_target_deployment(doc)
+	annotations := object.get(object.get(doc, "metadata", {}), "annotations", {})
+	trigger := object.get(annotations, "keel.sh/trigger", "")
+	trigger != "poll"
+	msg := sprintf("%s: 自前イメージを利用する Deployment には keel.sh/trigger: \"poll\" が必須である (現在: %q)", [resource_id(doc), trigger])
 }
 
 deny contains msg if {
@@ -69,11 +77,26 @@ deny contains msg if {
 	keel_target_deployment(doc)
 	annotations := object.get(object.get(doc, "metadata", {}), "annotations", {})
 	monitored_raw := object.get(annotations, "keel.sh/monitorContainers", "")
-	trim_space(monitored_raw) != ""
-	monitored := {trim_space(item) | some item in split(monitored_raw, ",")}
+	pattern := trim_space(monitored_raw)
+	pattern != ""
+	not regex.is_valid(pattern)
+	msg := sprintf("%s: keel.sh/monitorContainers (%q) は有効な正規表現ではない", [
+		resource_id(doc),
+		monitored_raw,
+	])
+}
+
+deny contains msg if {
+	some doc in docs
+	keel_target_deployment(doc)
+	annotations := object.get(object.get(doc, "metadata", {}), "annotations", {})
+	monitored_raw := object.get(annotations, "keel.sh/monitorContainers", "")
+	pattern := trim_space(monitored_raw)
+	pattern != ""
+	regex.is_valid(pattern)
 	some cname in own_image_container_names(doc)
-	not cname in monitored
-	msg := sprintf("%s: keel.sh/monitorContainers (%q) に自前イメージ利用コンテナ %q が含まれていない", [
+	not regex.match(pattern, cname)
+	msg := sprintf("%s: keel.sh/monitorContainers (%q) の正規表現が自前イメージ利用コンテナ %q に一致しない", [
 		resource_id(doc),
 		monitored_raw,
 		cname,

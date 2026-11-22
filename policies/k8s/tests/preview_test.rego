@@ -81,20 +81,54 @@ test_preview_ingress_prod_host_or_missing_tls_denied if {
 	contains(m_host, "本番ホスト")
 }
 
-# 異常系: RoleBinding の subjects[].namespace が preview Namespace と不整合な場合を検知する
-test_preview_rolebinding_subject_namespace_mismatch_denied if {
-	rb := {
+# 正常系・異常系: RoleBinding の subjects[].namespace が同一レンダリング内 SA / default なら許容、外部固定は禁止
+test_preview_rolebinding_subject_namespace_rules if {
+	# 1. 同一レンダリング結果内の SA を指す場合は kustomize.namespace 上書きに追従するため許容する (metadata.namespace 固定は warn)
+	sa := {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "api-sa", "namespace": "app-prod"}}
+	rb_internal := {
 		"apiVersion": "rbac.authorization.k8s.io/v1",
 		"kind": "RoleBinding",
-		"metadata": {"name": "rb", "namespace": "app-prod"},
-		"subjects": [{"kind": "ServiceAccount", "name": "sa", "namespace": "app-prod"}],
+		"metadata": {"name": "rb-internal", "namespace": "app-prod"},
+		"subjects": [
+			{"kind": "ServiceAccount", "name": "api-sa", "namespace": "app-prod"},
+			{"kind": "ServiceAccount", "name": "default", "namespace": "app-prod"},
+		],
 	}
-	denies := main.deny with input as [preview_ns, rb] with data.env as "preview"
-	warns := main.warn with input as [preview_ns, rb] with data.env as "preview"
-	some md in denies
+	denies_internal := main.deny with input as [preview_ns, sa, rb_internal] with data.env as "preview"
+	count(denies_internal) == 0
+	warns_internal := main.warn with input as [preview_ns, sa, rb_internal] with data.env as "preview"
+	count(warns_internal) == 2
+
+	# 2. レンダリング結果内に存在しない外部 SA の他 namespace を指す場合は禁止する
+	rb_external := {
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind": "RoleBinding",
+		"metadata": {"name": "rb-external"},
+		"subjects": [{"kind": "ServiceAccount", "name": "external-sa", "namespace": "kube-system"}],
+	}
+	denies_external := main.deny with input as [preview_ns, rb_external] with data.env as "preview"
+	some md in denies_external
 	contains(md, "RoleBinding の subject")
+}
+
+# 正常系: preview 用の -pr- を含むホスト名は Ingress で許可される
+test_preview_ingress_pr_host_allowed if {
+	pr_ing := json.patch(preview_ingress, [
+		{"op": "replace", "path": "/spec/rules/0/host", "value": "app-pr-42.wpcapp.net"},
+		{"op": "replace", "path": "/spec/tls/0/hosts/0", "value": "app-pr-42.wpcapp.net"},
+	])
+	denies := main.deny with input as [preview_ns, pr_ing] with data.env as "preview"
+	count(denies) == 0
+}
+
+# 警告系: 名前空間スコープリソースに別 namespace が固定されている場合は warn を出す
+test_preview_fixed_metadata_namespace_warns if {
+	cm := {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "cfg", "namespace": "app-prod"}}
+	denies := main.deny with input as [preview_ns, cm] with data.env as "preview"
+	warns := main.warn with input as [preview_ns, cm] with data.env as "preview"
+	count(denies) == 0
 	some mw in warns
-	contains(mw, "metadata.namespace")
+	contains(mw, "metadata.namespace が \"app-prod\" に固定されている")
 }
 
 # 例外系: prod 環境では ClusterRole や VMRule を禁止しない

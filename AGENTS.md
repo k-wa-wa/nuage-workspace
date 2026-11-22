@@ -125,8 +125,8 @@ jobs:
 
 ポリシー体系（`policies/k8s/`）とオプトアウトアノテーション:
 
-- **共通（`prod` / `preview`）**: 自前イメージへの `imagePullPolicy: Always`、自前イメージ利用 Deployment への `keel.sh/*` アノテーション（`policy`, `trigger`, `matchTag: "true"`, `monitorContainers`）、メインコンテナの `resources.requests`/`limits`、常駐ワークロード（Deployment / StatefulSet / DaemonSet）への `readinessProbe`/`livenessProbe`。
-- **`preview` のみ**: クラスタ全体・他環境へ波及するリソース（`ClusterRole`, `ClusterRoleBinding`, `CustomResourceDefinition`, `VMRule`, `DaemonSet` 等）の禁止、`Namespace` 単一性、`RoleBinding.subjects[].namespace` 整合、`Ingress` の ApplicationSet 置換前提構造および本番ホスト直書き禁止。
+- **共通（`prod` / `preview`）**: 自前イメージへの `imagePullPolicy: Always`、自前イメージ利用 Deployment への `keel.sh/*` アノテーション（`policy: force`, `trigger: poll`, `matchTag: "true"`, `monitorContainers` 正規表現一致）、メインコンテナの `resources.requests`/`limits`、常駐ワークロード（Deployment / StatefulSet / DaemonSet）への `readinessProbe`/`livenessProbe`。
+- **`preview` のみ**: クラスタ全体・他環境へ波及するリソース（`ClusterRole`, `ClusterRoleBinding`, `CustomResourceDefinition`, `VMRule`, `DaemonSet` 等）の禁止、`Namespace` 単一性、外部 SA を指す `RoleBinding.subjects[].namespace` 不整合禁止、`Ingress` の ApplicationSet 置換前提構造および本番ホスト直書き禁止。
 - **`prod` のみ**: ステートレス Deployment への `replicas >= 2`、ノード分散（`topologySpreadConstraints` または `podAntiAffinity` の `kubernetes.io/hostname`）、無停止許容 `PodDisruptionBudget` の存在。`ReadWriteOnce` PVC を参照するワークロードは自動除外する。
 - **オプトアウト用アノテーション（`metadata.annotations` に `"true"` を設定）**: `nuage.io/ignore-ha`, `nuage.io/ignore-probes`, `nuage.io/ignore-resources`, `nuage.io/ignore-keel`, `nuage.io/ignore-image-pull-policy`, `nuage.io/allow-in-preview`。
 

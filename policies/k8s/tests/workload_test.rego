@@ -107,8 +107,26 @@ test_custom_own_image_prefix_enforced if {
 	count(denies) >= 2
 }
 
-# 異常系: keel.sh/monitorContainers 欠落および自前コンテナ漏れを検知する
-test_missing_or_incomplete_keel_monitor_containers_denied if {
+# 異常系: keel.sh/policy / keel.sh/trigger の不正値、monitorContainers 欠落・正規表現不一致・不正構文を検知する
+test_keel_annotation_values_and_regex_validation if {
+	bad_policy := json.patch(valid_own_deployment, [{
+		"op": "replace",
+		"path": "/metadata/annotations/keel.sh~1policy",
+		"value": "never",
+	}])
+	denies_policy := main.deny with input as [bad_policy, valid_pdb] with data.env as "prod"
+	some mp in denies_policy
+	contains(mp, "keel.sh/policy: \"force\"")
+
+	bad_trigger := json.patch(valid_own_deployment, [{
+		"op": "replace",
+		"path": "/metadata/annotations/keel.sh~1trigger",
+		"value": "webhook",
+	}])
+	denies_trigger := main.deny with input as [bad_trigger, valid_pdb] with data.env as "prod"
+	some mt in denies_trigger
+	contains(mt, "keel.sh/trigger: \"poll\"")
+
 	missing := json.patch(valid_own_deployment, [{
 		"op": "remove",
 		"path": "/metadata/annotations/keel.sh~1monitorContainers",
@@ -117,14 +135,85 @@ test_missing_or_incomplete_keel_monitor_containers_denied if {
 	some m1 in denies_missing
 	contains(m1, "keel.sh/monitorContainers")
 
-	mismatch := json.patch(valid_own_deployment, [{
+	# Keel の仕様ではカンマ区切りではなく正規表現であるため "app,other" は一致しない
+	comma_list := json.patch(valid_own_deployment, [{
 		"op": "replace",
 		"path": "/metadata/annotations/keel.sh~1monitorContainers",
-		"value": "other-container",
+		"value": "app,other",
 	}])
-	denies_mismatch := main.deny with input as [mismatch, valid_pdb] with data.env as "prod"
-	some m2 in denies_mismatch
-	contains(m2, "含まれていない")
+	denies_comma := main.deny with input as [comma_list, valid_pdb] with data.env as "prod"
+	some m2 in denies_comma
+	contains(m2, "正規表現が自前イメージ利用コンテナ")
+
+	# 正規表現構文エラーを検知する
+	invalid_regex := json.patch(valid_own_deployment, [{
+		"op": "replace",
+		"path": "/metadata/annotations/keel.sh~1monitorContainers",
+		"value": "[unclosed",
+	}])
+	denies_regex := main.deny with input as [invalid_regex, valid_pdb] with data.env as "prod"
+	some m3 in denies_regex
+	contains(m3, "有効な正規表現ではない")
+
+	# 正しい正規表現パターン (^app$|worker) は許可される
+	valid_regex := json.patch(valid_own_deployment, [{
+		"op": "replace",
+		"path": "/metadata/annotations/keel.sh~1monitorContainers",
+		"value": "^app$|worker",
+	}])
+	denies_valid_regex := main.deny with input as [valid_regex, valid_pdb] with data.env as "prod"
+	count(denies_valid_regex) == 0
+}
+
+# 異常系: initContainer で自前イメージを使う場合も imagePullPolicy: Always が必須
+test_init_container_own_image_requires_pull_policy_always if {
+	dep := json.patch(valid_own_deployment, [{
+		"op": "add",
+		"path": "/spec/template/spec/initContainers",
+		"value": [{
+			"name": "init-migrator",
+			"image": "ghcr.io/k-wa-wa/migrator:latest",
+			"resources": {
+				"requests": {"cpu": "50m", "memory": "64Mi"},
+				"limits": {"cpu": "100m", "memory": "128Mi"},
+			},
+		}],
+	}])
+	denies := main.deny with input as [dep, valid_pdb] with data.env as "prod"
+	some msg in denies
+	contains(msg, "init:init-migrator")
+	contains(msg, "imagePullPolicy: Always")
+}
+
+# 異常系: Helm ラベルが付いていても自前イメージを利用していれば除外しない
+test_helm_managed_with_own_image_not_excluded if {
+	helm_own := {
+		"apiVersion": "apps/v1",
+		"kind": "Deployment",
+		"metadata": {
+			"name": "helm-own-app",
+			"namespace": "app-ns",
+			"labels": {"helm.sh/chart": "own-chart-1.0.0"},
+		},
+		"spec": {
+			"replicas": 1,
+			"template": {
+				"metadata": {"labels": {"app": "helm-own-app"}},
+				"spec": {
+					"containers": [{
+						"name": "app",
+						"image": "ghcr.io/k-wa-wa/own-app:latest",
+					}],
+				},
+			},
+		},
+	}
+	denies := main.deny with input as [helm_own] with data.env as "prod"
+	count(denies) > 0
+	some m_pull in denies
+	contains(m_pull, "imagePullPolicy: Always")
+	some m_probe in denies
+	contains(m_probe, "readinessProbe")
 }
 
 # 正常系: WorkflowTemplate は Deployment ではないため Keel アノテーション不要

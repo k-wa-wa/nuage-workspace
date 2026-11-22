@@ -56,8 +56,8 @@ jobs:
 
 ### 2.1. 検証パイプライン
 
-1. **YAML リント（`yamllint`）**: `yamllint-path`（既定 `k8s`）が存在する場合に実行する。呼び出し側に `.yamllint` / `.yamllint.yml` / `.yamllint.yaml` が無い場合はワークフロー内蔵のフォールバック設定を適用する。
-2. **Kustomize ビルド（`kustomize build`）**: `prod-overlays`・`preview-overlays` に指定された各オーバーレイ（存在するディレクトリのみ）をレンダリングする。`enable-helm: true` 指定時は `--enable-helm` を付与する。
+1. **YAML リント（`yamllint`）**: `yamllint-path`（既定 `k8s`）に対して実行する（非空指定時にパスが存在しない場合はエラーとする）。呼び出し側に `.yamllint` / `.yamllint.yml` / `.yamllint.yaml` が無い場合はワークフロー内蔵のフォールバック設定を適用する。
+2. **Kustomize ビルド（`kustomize build`）**: `prod-overlays`・`preview-overlays` に指定された各オーバーレイをレンダリングする（非空指定時にディレクトリが存在しない場合、および検証対象オーバーレイが合計 0 件の場合はエラーとする。片方のオーバーレイしか持たないリポジトリはもう一方に空文字 `""` を指定する）。`enable-helm: true` 指定時は `--enable-helm` を付与する。
 3. **スキーマ検証（`kubeconform`）**: `-strict -ignore-missing-schemas` および Datree `CRDs-catalog` を参照してリソース定義を検証する。
 4. **非推奨 API 検出（`pluto`）**: 廃止予定または削除済みの Kubernetes API バージョンを検出する。
 5. **Nuage 標準ポリシー検査（`conftest`）**: `policies/k8s/` の Rego ポリシーを `--combine` モードで適用し、結果を `$GITHUB_STEP_SUMMARY` に出力する。
@@ -109,7 +109,7 @@ jobs:
 | ファイル | 種別 | 内容 |
 | :-- | :-- | :-- |
 | `workload.rego` | `deny` | 自前イメージ（`own_image_prefixes` 一致）を使う全コンテナ（`initContainers` および `WorkflowTemplate` / `CronWorkflow` / `Workflow` 含む）に `imagePullPolicy: Always` を必須とする |
-| `workload.rego` | `deny` | 自前イメージを使う `Deployment` に `keel.sh/policy`, `keel.sh/trigger`, `keel.sh/matchTag: "true"`, `keel.sh/monitorContainers`（全自前イメージ利用コンテナ名を含むこと）を必須とする。`CronJob`・`Job`・`WorkflowTemplate` 等は対象外である |
+| `workload.rego` | `deny` | 自前イメージを使う `Deployment` に `keel.sh/policy: "force"`, `keel.sh/trigger: "poll"`, `keel.sh/matchTag: "true"`, `keel.sh/monitorContainers`（Go 正規表現として妥当であり、自前イメージ利用コンテナ名すべてにマッチすること）を必須とする。`CronJob`・`Job`・`WorkflowTemplate` 等は対象外である |
 | `workload.rego` | `deny` | 全メインコンテナ（`Deployment` / `StatefulSet` / `DaemonSet` / `Job` / `CronJob` / `Pod` / Argo Workflows）に `resources.requests`（`cpu`, `memory`）および `resources.limits`（`memory`）を必須とする |
 | `workload.rego` | `warn` | `initContainers` に `resources.requests` / `limits` が未設定の場合に警告を出力する |
 | `workload.rego` | `deny` | 常駐ワークロード（`Deployment` / `StatefulSet` / `DaemonSet`）の全コンテナに `readinessProbe` と `livenessProbe` を必須とする |
@@ -120,7 +120,7 @@ jobs:
 | :-- | :-- | :-- |
 | `preview.rego` | `deny` | クラスタ全体または他環境へ波及するリソース（`ClusterRole`, `ClusterRoleBinding`, `CustomResourceDefinition`, `PriorityClass`, `MutatingWebhookConfiguration`, `ValidatingWebhookConfiguration`, `StorageClass`, `PersistentVolume`, `IngressClass`, `ClusterIssuer`, `DaemonSet`, `VMRule`, `VMAlert`, `VMAlertmanager`, `VMAgent`, `VMServiceScrape`, `VMPodScrape`, `VMProbe`, `VMNodeScrape`, `VMStaticScrape`, `VMScrapeConfig`, `PrometheusRule`, `ServiceMonitor`, `PodMonitor`）の混入を禁止する |
 | `preview.rego` | `deny` | Argo CD ApplicationSet の置換・自動削除対象となる `Namespace` リソースがちょうど 1 つ存在することを必須とする |
-| `preview.rego` | `deny` | `RoleBinding` の `subjects[].namespace` が `preview` の `Namespace` 名と不整合な場合を禁止する |
+| `preview.rego` | `deny` | `RoleBinding` の `subjects[].namespace` が同一レンダリング結果内に無い外部 ServiceAccount 等の他 namespace に固定されている場合を禁止する（同一結果内の ServiceAccount および `default` は `kustomize.namespace` 上書きで追従するため許容） |
 | `preview.rego` | `warn` | 名前空間スコープリソースの `metadata.namespace` が `preview` の `Namespace` 名と異なる固定値になっている場合に警告を出力する |
 | `preview.rego` | `deny` | `Ingress` が ApplicationSet の JSON Patch 置換対象（`spec.rules[0].host`, `spec.tls[0].hosts[0]`, `spec.tls[0].secretName`）を備えていない場合、または `*.wpcapp.net`（`-pr-` を除く）/ `*.cluster.wpc` の本番ホスト名が直書きされている場合を禁止する |
 

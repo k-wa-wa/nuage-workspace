@@ -78,7 +78,27 @@ preview_namespace_name := preview_namespaces[0].metadata.name if {
 	count(preview_namespaces) == 1
 }
 
-# RoleBinding の subjects[].namespace が preview Namespace と異なる場合は権限参照が壊れるため禁止
+# RoleBinding の subject が同一レンダリング内の ServiceAccount または default SA を指すか判定する
+# (これらが存在する場合、Argo CD の kustomize.namespace 上書きで subject.namespace も追従する)
+is_kustomize_managed_sa(subj, subj_ns) if {
+	object.get(subj, "kind", "") == "ServiceAccount"
+	subj.name == "default"
+} else if {
+	object.get(subj, "kind", "") == "ServiceAccount"
+	some sa in docs
+	sa.kind == "ServiceAccount"
+	sa.metadata.name == subj.name
+	sa_ns := object.get(object.get(sa, "metadata", {}), "namespace", "")
+	sa_ns == subj_ns
+} else if {
+	object.get(subj, "kind", "") == "ServiceAccount"
+	some sa in docs
+	sa.kind == "ServiceAccount"
+	sa.metadata.name == subj.name
+	object.get(object.get(sa, "metadata", {}), "namespace", "") == ""
+}
+
+# RoleBinding の subjects[].namespace が外部の固定 namespace を指している場合は禁止
 deny contains msg if {
 	target_env == "preview"
 	preview_namespace_name != ""
@@ -88,6 +108,7 @@ deny contains msg if {
 	subj_ns := object.get(subj, "namespace", "")
 	subj_ns != ""
 	subj_ns != preview_namespace_name
+	not is_kustomize_managed_sa(subj, subj_ns)
 	msg := sprintf("%s: RoleBinding の subject (%s) の namespace が %q に固定されており、preview Namespace (%q) と不整合である", [
 		resource_id(doc),
 		object.get(subj, "name", "<unnamed>"),
