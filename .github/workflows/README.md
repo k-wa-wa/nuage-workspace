@@ -8,7 +8,7 @@
 | :-- | :-- |
 | `docker-build-push.yml` | Docker イメージのビルド、Trivy 脆弱性スキャン（合格時のみ GHCR へ push）、PR プレビューコメント投稿 |
 | `k8s-validate.yml` | Kustomize ビルド、`yamllint` / `kubeconform` / `pluto` 検証、Conftest（Rego）による k8s 標準ポリシー検査 |
-| `validate-policies.yml` | このリポジトリ内の Rego ポリシーテストとワークフロー YAML の lint（他リポジトリからは呼ばない） |
+| `ci.yml` | このリポジトリ内の Rego ポリシーテストとワークフロー YAML の lint（他リポジトリからは呼ばない） |
 
 ## 使い方
 
