@@ -67,7 +67,7 @@ jobs:
         with:
           repository: k-wa-wa/nuage-workspace
           ref: ${{ inputs.policy-ref }}
-          sparse-checkout: policies/k8s
+          sparse-checkout: .github/workflows/validate/k8s
           path: .nuage-workspace-policies
           persist-credentials: false
 
@@ -248,7 +248,7 @@ jobs:
             local conftest_out="${WORK_DIR}/conftest.out"
             local conftest_rc=0
             conftest test --no-color --combine --all-namespaces \
-              -p .nuage-workspace-policies/policies/k8s \
+              -p .nuage-workspace-policies/.github/workflows/validate/k8s \
               -d "$data_json" \
               "$rendered" > "$conftest_out" 2>&1 || conftest_rc=$?
 

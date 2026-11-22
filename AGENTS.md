@@ -72,63 +72,10 @@ NixOS に効く変更 (nuage-cluster の `nix/`、flake input のリポジトリ
 
 ## 5. 共通 GitHub Actions Reusable Workflow
 
-`nuage-workspace` は、複数リポジトリで共通利用する GitHub Actions Reusable Workflow および OPA/Conftest ポリシーを提供する。詳細は [docs/shared-ci.md](docs/shared-ci.md) を参照すること。
+`nuage-workspace` は、複数リポジトリで共通利用する Reusable Workflow を `.github/workflows/` に持つ。概要と使い方は [.github/workflows/README.md](.github/workflows/README.md) を参照すること。
 
-### 5.1. `docker-build-push.yml`（Docker ビルド・Trivy スキャン・GHCR Push）
-
-`.github/workflows/docker-build-push.yml` は、Docker イメージのローカルビルド（`load: true`）、Trivy による脆弱性スキャン、GHCR への push、PR プレビューコメントの投稿をまとめた reusable workflow である。
-
-- 呼び出し側のワークフローには `permissions: contents: read / packages: write / pull-requests: write` を明示する必要がある。
-- デフォルトで `scan-severity: "CRITICAL"`・`ignore-unfixed: true` により Trivy スキャンを実行し、該当脆弱性を検出した場合は GHCR への push と PR コメント投稿をブロックする。
-- `HIGH` 以下などブロック対象外の脆弱性はブロックせず、GitHub Actions Step Summary（`$GITHUB_STEP_SUMMARY`）に集計表と警告一覧を出力する。
-- 呼び出し側リポジトリ直下に `.trivyignore` が存在する場合に自動適用する（未存在でもエラーにならない）。
-
-主な入力パラメータ:
-
-| パラメータ | 既定値 | 説明 |
-| :-- | :-- | :-- |
-| `image` | （必須） | push 先イメージ名（例: `ghcr.io/owner/repo`） |
-| `context` | `"."` | `docker build` のビルドコンテキスト |
-| `file` | `""` | Dockerfile パス（空の場合は `context` 直下） |
-| `scan-severity` | `"CRITICAL"` | push をブロックする Trivy 重大度（カンマ区切り） |
-| `ignore-unfixed` | `true` | 修正パッチが存在しない脆弱性を無視するか |
-| `trivy-ignore-file` | `".trivyignore"` | `.trivyignore` のパス（存在する場合のみ適用） |
-| `require-same-repo-pr` | `true` | fork からの PR をスキップするか |
-| `pr-comment-marker` / `pr-comment-body` | `""` | PR プレビューコメントのマーカーおよび本文 |
-
-### 5.2. `k8s-validate.yml`（Kubernetes マニフェスト検証・標準化）
-
-`.github/workflows/k8s-validate.yml` は、`yamllint`・`kustomize build`・`kubeconform`・`pluto` および `policies/k8s/` の OPA/Conftest ポリシーによる k8s マニフェスト検証をまとめた reusable workflow である。
-
-```yaml
-jobs:
-  validate-k8s:
-    uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
-    with:
-      yamllint-path: "k8s"
-      prod-overlays: "k8s/overlays/prod"
-      preview-overlays: "k8s/overlays/preview"
-```
-
-主な入力パラメータ:
-
-| パラメータ | 既定値 | 説明 |
-| :-- | :-- | :-- |
-| `yamllint-path` | `"k8s"` | `yamllint` の対象パス（空でスキップ、`.yamllint` 未配置時は既定設定を使用） |
-| `prod-overlays` | `"k8s/overlays/prod"` | `prod` として検証する Kustomize オーバーレイ（カンマ/改行区切り） |
-| `preview-overlays` | `"k8s/overlays/preview"` | `preview` として検証する Kustomize オーバーレイ（カンマ/改行区切り） |
-| `enable-helm` | `false` | `kustomize build` に `--enable-helm` を付与するか |
-| `own-image-prefixes` | `"ghcr.io/k-wa-wa/"` | 自前イメージプレフィックス（カンマ区切り） |
-| `exclude-helm-managed` | `true` | Helm 管理サードパーティリソースをワークロード品質ルールから除外するか |
-| `fail-on-policy` | `true` | Conftest 違反時に失敗させるか（`false` で警告サマリのみ出力） |
-| `policy-ref` | `"master"` | ポリシー定義を取得する `nuage-workspace` の ref |
-
-ポリシー体系（`policies/k8s/`）とオプトアウトアノテーション:
-
-- **共通（`prod` / `preview`）**: 自前イメージへの `imagePullPolicy: Always`、自前イメージ利用 Deployment への `keel.sh/*` アノテーション（`policy: force`, `trigger: poll`, `matchTag: "true"`, `monitorContainers` 正規表現一致）、メインコンテナの `resources.requests`/`limits`、常駐ワークロード（Deployment / StatefulSet / DaemonSet）への `readinessProbe`/`livenessProbe`。
-- **`preview` のみ**: クラスタ全体・他環境へ波及するリソース（`ClusterRole`, `ClusterRoleBinding`, `CustomResourceDefinition`, `VMRule`, `DaemonSet` 等）の禁止、`Namespace` 単一性、外部 SA を指す `RoleBinding.subjects[].namespace` 不整合禁止、`Ingress` の ApplicationSet 置換前提構造および本番ホスト直書き禁止。
-- **`prod` のみ**: ステートレス Deployment への `replicas >= 2`、ノード分散（`topologySpreadConstraints` または `podAntiAffinity` の `kubernetes.io/hostname`）、無停止許容 `PodDisruptionBudget` の存在。`ReadWriteOnce` PVC を参照するワークロードは自動除外する。
-- **オプトアウト用アノテーション（`metadata.annotations` に `"true"` を設定）**: `nuage.io/ignore-ha`, `nuage.io/ignore-probes`, `nuage.io/ignore-resources`, `nuage.io/ignore-keel`, `nuage.io/ignore-image-pull-policy`, `nuage.io/allow-in-preview`。
+- `.github/workflows/docker-build-push.yml`: Docker イメージのビルド・Trivy 脆弱性スキャン・GHCR への push・PR プレビューコメント投稿を行う（`permissions: contents: read / packages: write / pull-requests: write` が必要）。
+- `.github/workflows/k8s-validate.yml`: `yamllint`・`kustomize build`・`kubeconform`・`pluto` および `.github/workflows/validate/k8s/` の Conftest（Rego）ポリシーによる k8s マニフェスト検証を行う。
 
 ---
 

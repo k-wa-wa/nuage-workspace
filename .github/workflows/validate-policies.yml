@@ -5,11 +5,9 @@ on:
     branches:
       - master
     paths:
-      - "policies/**"
       - ".github/workflows/**"
   pull_request:
     paths:
-      - "policies/**"
       - ".github/workflows/**"
 
 permissions:
@@ -71,10 +69,10 @@ jobs:
           yamllint --version
 
       - name: Run OPA unit tests
-        run: opa test policies/k8s -v
+        run: opa test .github/workflows/validate/k8s -v
 
       - name: Run Conftest verify
-        run: conftest verify -p policies/k8s
+        run: conftest verify -p .github/workflows/validate/k8s
 
       - name: Lint workflow YAML files
         run: |
