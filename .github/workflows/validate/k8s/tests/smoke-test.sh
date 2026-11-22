@@ -206,10 +206,13 @@ spec:
           image: ghcr.io/k-wa-wa/demo-app:v1.0.0
 EOF
 
-if (cd "$FAIL_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" --preview-overlays ""); then
+FAIL_OUT="${TMP_ROOT}/fail.out"
+if (cd "$FAIL_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" --preview-overlays "" >"$FAIL_OUT" 2>&1); then
   echo "❌ Expected policy violation run to fail, but it succeeded." >&2
   exit 1
 fi
+grep -q "Conftest policy violations detected" "$FAIL_OUT"
+grep -q "replicas >= 2" "$FAIL_OUT"
 
 echo "=== Smoke Test 4: Policy violation warning PASS (fail-on-policy=false) ==="
 SUMMARY_WARN="${TMP_ROOT}/summary-warn.md"
@@ -239,9 +242,11 @@ echo "=== Smoke Test 6: yamllint failure ==="
 YAML_FAIL_REPO="${TMP_ROOT}/yaml-fail-repo"
 create_valid_repo "$YAML_FAIL_REPO"
 printf 'invalid: [unclosed\n' > "${YAML_FAIL_REPO}/k8s/broken.yaml"
-if (cd "$YAML_FAIL_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER"); then
+YAML_FAIL_OUT="${TMP_ROOT}/yaml-fail.out"
+if (cd "$YAML_FAIL_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" >"$YAML_FAIL_OUT" 2>&1); then
   echo "❌ Expected yamllint failure to fail, but it succeeded." >&2
   exit 1
 fi
+grep -q "k8s/broken.yaml" "$YAML_FAIL_OUT"
 
 echo "✅ All smoke tests passed."

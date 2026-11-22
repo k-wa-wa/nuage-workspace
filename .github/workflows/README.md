@@ -56,6 +56,8 @@ jobs:
 #!nix-shell -i bash -p kustomize kubeconform pluto conftest jq yamllint -I nixpkgs=channel:nixpkgs-unstable
 set -euo pipefail
 
+cd "$(git rev-parse --show-toplevel)"
+
 LOCAL_RUNNER="${HOME}/ghq/github.com/k-wa-wa/nuage-workspace/.github/workflows/validate/k8s/run.sh"
 if [ -x "$LOCAL_RUNNER" ]; then
   RUNNER="$LOCAL_RUNNER"

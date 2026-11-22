@@ -32,7 +32,7 @@ on:
         type: boolean
         default: true
       policy-ref:
-        description: "ポリシー定義を取得する nuage-workspace の ref"
+        description: "ポリシー定義および検証スクリプト（run.sh）を取得する nuage-workspace の ref（workflow の ref と揃えること）"
         type: string
         default: "master"
       require-same-repo-pr:
