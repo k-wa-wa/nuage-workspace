@@ -32,7 +32,7 @@ jobs:
 
 ### `k8s-validate.yml`
 
-`prod`・`preview` それぞれの Kustomize オーバーレイを検証する。
+`prod`・`preview` それぞれの Kustomize オーバーレイに加え、単体 YAML ファイル・非 Kustomize フォルダ・`kustomization.yaml` 直接指定・glob パターンおよび `common` 環境（標準チェックのみ）を検証できる。
 
 ```yaml
 permissions:
@@ -45,6 +45,20 @@ jobs:
       yamllint-path: "k8s"
       prod-overlays: "k8s/overlays/prod"
       preview-overlays: "k8s/overlays/preview"
+```
+
+ファイル・ディレクトリ・glob を混在させる場合は `common-targets` / `prod-targets` / `preview-targets`（または単一環境向けの `targets` + `env`）を使う。
+
+```yaml
+jobs:
+  validate-k8s:
+    uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
+    with:
+      enable-helm: true
+      common-targets: |
+        manifests/bootstrap/kustomization.yaml
+        manifests/apps/*.yaml
+      prod-targets: "manifests/apps/*/overlays/prod"
 ```
 
 #### ローカル実行（各リポジトリの `k8s/lint.sh`）
@@ -69,6 +83,8 @@ else
   RUNNER="${TMP_DIR}/nuage-workspace-master/.github/workflows/validate/k8s/run.sh"
 fi
 
-# 必要に応じて環境変数（PROD_OVERLAYS / PREVIEW_OVERLAYS / YAMLLINT_PATH 等）や引数を指定する
+# 従来どおり環境変数または引数で実行する
+# 例: "$RUNNER" --env prod manifests/apps/*/overlays/prod
+# 例: "$RUNNER" --env common manifests/bootstrap/kustomization.yaml manifests/apps/*.yaml
 "$RUNNER"
 ```

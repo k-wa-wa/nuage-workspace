@@ -14,7 +14,7 @@ docs := [unwrap_doc(item) | some item in input] if {
 	is_array(input)
 } else := [unwrap_doc(input)]
 
-# 環境設定（"prod" または "preview"）
+# 環境設定（"common" / "prod" / "preview"）
 target_env := data.env if {
 	data.env
 } else := "prod"
