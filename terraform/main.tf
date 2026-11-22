@@ -151,3 +151,27 @@ module "nuage_honeytrap" {
     description = ""
   }
 }
+
+#####
+
+# 記憶専用 Private リポジトリ (autopilot-task が bot-wa-wa として直接 push するため protect-default-branch は付けない)
+resource "github_repository" "atelier_memory" {
+  name         = "atelier-memory"
+  description  = "atelier の自律タスク用記憶リポジトリ"
+  visibility   = "private"
+  auto_init    = true
+  has_issues   = false
+  has_projects = false
+  has_wiki     = false
+
+  lifecycle {
+    ignore_changes = [auto_init]
+  }
+}
+
+resource "github_repository_collaborators" "atelier_memory" {
+  repository = github_repository.atelier_memory.name
+  user {
+    username = "bot-wa-wa"
+  }
+}
