@@ -437,4 +437,85 @@ if (cd "$MULTI_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" --env preview apps/
 fi
 grep -q "ClusterRole" "$PREVIEW_FAIL_OUT"
 
+echo "=== Smoke Test 13: Kustomization (extensionless), nested prune, original file path, and pluto multi-file ==="
+EXT_REPO="${TMP_ROOT}/ext-repo"
+mkdir -p "${EXT_REPO}/kust-no-ext" "${EXT_REPO}/bundle/nested-kust" "${EXT_REPO}/bundle/nested-chart/templates"
+cp "${PASS_REPO}/k8s/overlays/prod/deployment.yaml" "${EXT_REPO}/kust-no-ext/deployment.yaml"
+cp "${PASS_REPO}/k8s/overlays/prod/pdb.yaml" "${EXT_REPO}/kust-no-ext/pdb.yaml"
+cat << 'EOF' > "${EXT_REPO}/kust-no-ext/Kustomization"
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - pdb.yaml
+EOF
+
+# 拡張子なし Kustomization がディレクトリ指定でもファイル直接指定でも Kustomize ビルドされること
+(
+  cd "$EXT_REPO"
+  env -u GITHUB_STEP_SUMMARY "$RUNNER" --env prod kust-no-ext
+  env -u GITHUB_STEP_SUMMARY "$RUNNER" --env prod kust-no-ext/Kustomization
+)
+
+# 非 Kustomize フォルダ内の Kustomize / Helm サブツリーは除外され、親直下の生 YAML のみが検証されること
+cp "${RAW_REPO}/raw/cm.yaml" "${EXT_REPO}/bundle/root.yaml"
+cat << 'EOF' > "${EXT_REPO}/bundle/nested-kust/kustomization.yaml"
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - broken.yaml
+EOF
+printf 'invalid_for_kubeconform: true\n' > "${EXT_REPO}/bundle/nested-kust/broken.yaml"
+printf 'apiVersion: v2\nname: dummy\nversion: 0.1.0\n' > "${EXT_REPO}/bundle/nested-chart/Chart.yaml"
+printf '{{ invalid helm template }}\n' > "${EXT_REPO}/bundle/nested-chart/templates/deploy.yaml"
+
+(
+  cd "$EXT_REPO"
+  env -u GITHUB_STEP_SUMMARY "$RUNNER" --env common bundle
+)
+
+# kubeconform エラーに一時ファイル名ではなく元のファイル名が含まれること
+cat << 'EOF' > "${EXT_REPO}/bundle/bad-schema.yaml"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bad-cm
+  unknownField: true
+EOF
+ORIG_PATH_OUT="${TMP_ROOT}/orig-path.out"
+if (cd "$EXT_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" --env common bundle >"$ORIG_PATH_OUT" 2>&1); then
+  echo "❌ Expected invalid schema in bundle/bad-schema.yaml to fail, but it succeeded." >&2
+  exit 1
+fi
+grep -q "bundle/bad-schema.yaml" "$ORIG_PATH_OUT"
+if (cd "$EXT_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" --env common bundle/bad-schema.yaml >"$ORIG_PATH_OUT" 2>&1); then
+  echo "❌ Expected invalid schema in single file bundle/bad-schema.yaml to fail, but it succeeded." >&2
+  exit 1
+fi
+grep -q "bundle/bad-schema.yaml" "$ORIG_PATH_OUT"
+rm -f "${EXT_REPO}/bundle/bad-schema.yaml"
+
+# pluto がディレクトリ内の 2 番目以降のファイルの非推奨 API も検知すること
+cat << 'EOF' > "${EXT_REPO}/bundle/zz-deprecated.yaml"
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: old-ing
+spec:
+  rules:
+    - host: example.com
+      http:
+        paths:
+          - path: /
+            backend:
+              serviceName: app
+              servicePort: 80
+EOF
+PLUTO_DIR_OUT="${TMP_ROOT}/pluto-dir.out"
+if (cd "$EXT_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" --env common bundle >"$PLUTO_DIR_OUT" 2>&1); then
+  echo "❌ Expected deprecated API in bundle/zz-deprecated.yaml to fail, but it succeeded." >&2
+  exit 1
+fi
+grep -q "bundle/zz-deprecated.yaml" "$PLUTO_DIR_OUT"
+
 echo "✅ All smoke tests passed."

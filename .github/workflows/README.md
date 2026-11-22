@@ -32,7 +32,7 @@ jobs:
 
 ### `k8s-validate.yml`
 
-`prod`・`preview` それぞれの Kustomize オーバーレイに加え、単体 YAML ファイル・非 Kustomize フォルダ・`kustomization.yaml` 直接指定・glob パターンおよび `common` 環境（標準チェックのみ）を検証できる。
+`prod`・`preview` それぞれの Kustomize オーバーレイに加え、単体 YAML ファイル・非 Kustomize フォルダ・`kustomization.yaml(.yml)` / `Kustomization` 直接指定・glob パターンおよび `common` 環境（標準チェックのみ）を検証できる。
 
 ```yaml
 permissions:
@@ -47,7 +47,7 @@ jobs:
       preview-overlays: "k8s/overlays/preview"
 ```
 
-ファイル・ディレクトリ・glob を混在させる場合は `common-targets` / `prod-targets` / `preview-targets`（または単一環境向けの `targets` + `env`）を使う。
+ファイル・ディレクトリ・glob を混在させる場合は `common-targets` / `prod-targets` / `preview-targets`（または単一環境向けの `targets` + `env`）を使う。なお、これら新入力または位置引数を使う場合、`yamllint` は `yamllint-path`（ローカルでは `--yamllint-path` / `YAMLLINT_PATH`）を明示したときだけ実行される（既存プロジェクトで `fail-on-policy: true` によるポリシー違反を段階的に解消する場合は、`fail-on-policy: false` や `nuage.io/ignore-*` アノテーションと併用する）。
 
 ```yaml
 jobs:
@@ -55,6 +55,8 @@ jobs:
     uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
     with:
       enable-helm: true
+      yamllint-path: "manifests"
+      fail-on-policy: false
       common-targets: |
         manifests/bootstrap/kustomization.yaml
         manifests/apps/*.yaml

@@ -37,13 +37,16 @@ FAIL_ON_POLICY="${FAIL_ON_POLICY:-true}"
 POLICY_DIR="${POLICY_DIR:-$SCRIPT_DIR}"
 
 POSITIONAL_TARGETS=()
+RESOLVED_TARGETS=()
+TARGET_INPUT_FILES=()
+RESOLVED_KIND=""
 
 usage() {
   cat << 'EOF'
 Usage: run.sh [OPTIONS] [target...]
 
 Kubernetes マニフェストの共通検証（yamllint / kustomize / kubeconform / pluto / conftest）を実行する。
-ターゲットには Kustomize ディレクトリ、kustomization.yaml(.yml) ファイル、単体 YAML ファイル、
+ターゲットには Kustomize ディレクトリ、kustomization.yaml(.yml) / Kustomization ファイル、単体 YAML ファイル、
 非 Kustomize フォルダ、および glob パターンを指定できる。
 各オプションは環境変数でも指定できる（CLI 引数が優先される）。
 
@@ -378,12 +381,12 @@ EOF
 
 is_kustomization_filename() {
   local name="$1"
-  [ "$name" = "kustomization.yaml" ] || [ "$name" = "kustomization.yml" ]
+  [ "$name" = "kustomization.yaml" ] || [ "$name" = "kustomization.yml" ] || [ "$name" = "Kustomization" ]
 }
 
 has_kustomization_in_dir() {
   local dir="$1"
-  [ -f "${dir}/kustomization.yaml" ] || [ -f "${dir}/kustomization.yml" ]
+  [ -f "${dir}/kustomization.yaml" ] || [ -f "${dir}/kustomization.yml" ] || [ -f "${dir}/Kustomization" ]
 }
 
 has_yaml_content() {
@@ -401,67 +404,75 @@ run_kustomize_build() {
   kustomize build "${kustomize_args[@]}" "$kustomize_dir" > "$out_file"
 }
 
-combine_yaml_dir() {
+collect_yaml_dir_files() {
   local env_name="$1"
   local dir="$2"
-  local out_file="$3"
+  TARGET_INPUT_FILES=()
 
-  local yaml_files=()
-  mapfile -t yaml_files < <(
-    find "$dir" -type f \( -name '*.yaml' -o -name '*.yml' \) \
-      ! -name 'kustomization.yaml' ! -name 'kustomization.yml' | LC_ALL=C sort
+  # 配下の独立した Kustomize サブディレクトリや Helm チャートディレクトリは生 YAML 群へ混入させない
+  mapfile -t TARGET_INPUT_FILES < <(
+    find "$dir" \
+      \( -type d ! -path "$dir" \( \
+        -exec test -e '{}/kustomization.yaml' \; \
+        -o -exec test -e '{}/kustomization.yml' \; \
+        -o -exec test -e '{}/Kustomization' \; \
+        -o -exec test -e '{}/Chart.yaml' \; \
+      \) -prune \) \
+      -o -type f \( -name '*.yaml' -o -name '*.yml' \) \
+      ! -name 'kustomization.yaml' ! -name 'kustomization.yml' ! -name 'Kustomization' -print \
+      | LC_ALL=C sort
   )
 
-  if [ "${#yaml_files[@]}" -eq 0 ]; then
-    echo "❌ Directory '$dir' (env=$env_name) contains no YAML files (excluding kustomization.yaml/.yml)." >&2
+  if [ "${#TARGET_INPUT_FILES[@]}" -eq 0 ]; then
+    echo "❌ Directory '$dir' (env=$env_name) contains no YAML files (excluding kustomization and Helm chart subtrees)." >&2
     exit 1
   fi
 
-  : > "$out_file"
-  local idx=0
+  local has_nonempty=false
   local f
-  for f in "${yaml_files[@]}"; do
-    if [ "$idx" -gt 0 ]; then
-      printf '\n---\n' >> "$out_file"
+  for f in "${TARGET_INPUT_FILES[@]}"; do
+    if has_yaml_content "$f"; then
+      has_nonempty=true
+      break
     fi
-    cat "$f" >> "$out_file"
-    idx=$((idx + 1))
   done
 
-  if ! has_yaml_content "$out_file"; then
+  if [ "$has_nonempty" = "false" ]; then
     echo "❌ Directory '$dir' (env=$env_name) contains only empty YAML documents." >&2
     exit 1
   fi
 }
 
-render_target() {
+prepare_target_inputs() {
   local env_name="$1"
   local target="$2"
-  local out_file="$3"
+  local kustomize_out="$3"
+  TARGET_INPUT_FILES=()
+  RESOLVED_KIND=""
 
   if [ ! -e "$target" ]; then
     echo "❌ Target '$target' (env=$env_name) does not exist." >&2
     exit 1
   fi
 
-  local resolved_kind=""
-
   case "$TARGET_MODE" in
     kustomize)
       if [ -f "$target" ]; then
         if ! is_kustomization_filename "$(basename "$target")"; then
-          echo "❌ Target '$target' (env=$env_name) is not a kustomization.yaml/.yml file (mode=kustomize)." >&2
+          echo "❌ Target '$target' (env=$env_name) is not a kustomization file (mode=kustomize)." >&2
           exit 1
         fi
-        run_kustomize_build "$(dirname "$target")" "$out_file"
-        resolved_kind="kustomize"
+        run_kustomize_build "$(dirname "$target")" "$kustomize_out"
+        TARGET_INPUT_FILES=("$kustomize_out")
+        RESOLVED_KIND="kustomize"
       elif [ -d "$target" ]; then
         if ! has_kustomization_in_dir "$target"; then
-          echo "❌ Directory '$target' (env=$env_name) does not contain kustomization.yaml/.yml (mode=kustomize)." >&2
+          echo "❌ Directory '$target' (env=$env_name) does not contain kustomization.yaml/.yml/Kustomization (mode=kustomize)." >&2
           exit 1
         fi
-        run_kustomize_build "$target" "$out_file"
-        resolved_kind="kustomize"
+        run_kustomize_build "$target" "$kustomize_out"
+        TARGET_INPUT_FILES=("$kustomize_out")
+        RESOLVED_KIND="kustomize"
       else
         echo "❌ Target '$target' (env=$env_name) is neither a regular file nor a directory." >&2
         exit 1
@@ -469,15 +480,15 @@ render_target() {
       ;;
     yaml)
       if [ -f "$target" ]; then
-        cp "$target" "$out_file"
-        if ! has_yaml_content "$out_file"; then
+        if ! has_yaml_content "$target"; then
           echo "❌ YAML file '$target' (env=$env_name) is empty." >&2
           exit 1
         fi
-        resolved_kind="yaml-file"
+        TARGET_INPUT_FILES=("$target")
+        RESOLVED_KIND="yaml-file"
       elif [ -d "$target" ]; then
-        combine_yaml_dir "$env_name" "$target" "$out_file"
-        resolved_kind="yaml-dir"
+        collect_yaml_dir_files "$env_name" "$target"
+        RESOLVED_KIND="yaml-dir"
       else
         echo "❌ Target '$target' (env=$env_name) is neither a regular file nor a directory." >&2
         exit 1
@@ -488,26 +499,28 @@ render_target() {
         local base
         base="$(basename "$target")"
         if is_kustomization_filename "$base"; then
-          run_kustomize_build "$(dirname "$target")" "$out_file"
-          resolved_kind="kustomize"
+          run_kustomize_build "$(dirname "$target")" "$kustomize_out"
+          TARGET_INPUT_FILES=("$kustomize_out")
+          RESOLVED_KIND="kustomize"
         elif [[ "$base" == *.yaml || "$base" == *.yml ]]; then
-          cp "$target" "$out_file"
-          if ! has_yaml_content "$out_file"; then
+          if ! has_yaml_content "$target"; then
             echo "❌ YAML file '$target' (env=$env_name) is empty." >&2
             exit 1
           fi
-          resolved_kind="yaml-file"
+          TARGET_INPUT_FILES=("$target")
+          RESOLVED_KIND="yaml-file"
         else
-          echo "❌ Unsupported file '$target' (env=$env_name) in mode=auto (expected .yaml or .yml)." >&2
+          echo "❌ Unsupported file '$target' (env=$env_name) in mode=auto (expected .yaml, .yml, or Kustomization)." >&2
           exit 1
         fi
       elif [ -d "$target" ]; then
         if has_kustomization_in_dir "$target"; then
-          run_kustomize_build "$target" "$out_file"
-          resolved_kind="kustomize"
+          run_kustomize_build "$target" "$kustomize_out"
+          TARGET_INPUT_FILES=("$kustomize_out")
+          RESOLVED_KIND="kustomize"
         else
-          combine_yaml_dir "$env_name" "$target" "$out_file"
-          resolved_kind="yaml-dir"
+          collect_yaml_dir_files "$env_name" "$target"
+          RESOLVED_KIND="yaml-dir"
         fi
       else
         echo "❌ Target '$target' (env=$env_name) is neither a regular file nor a directory." >&2
@@ -515,8 +528,24 @@ render_target() {
       fi
       ;;
   esac
+}
 
-  RESOLVED_KIND="$resolved_kind"
+run_pluto_on_inputs() {
+  if [ "${#TARGET_INPUT_FILES[@]}" -eq 1 ]; then
+    pluto detect "${TARGET_INPUT_FILES[0]}"
+    return 0
+  fi
+
+  local f
+  local failed=0
+  for f in "${TARGET_INPUT_FILES[@]}"; do
+    echo "Checking $f"
+    if ! pluto detect "$f"; then
+      echo "❌ pluto detected deprecated API in '$f'." >&2
+      failed=1
+    fi
+  done
+  return "$failed"
 }
 
 validate_target() {
@@ -529,9 +558,8 @@ validate_target() {
 
   VALIDATED_COUNT=$((VALIDATED_COUNT + 1))
 
-  local rendered="${WORK_DIR}/rendered-${VALIDATED_COUNT}-${env_name}.yaml"
-  RESOLVED_KIND=""
-  render_target "$env_name" "$target" "$rendered"
+  local kustomize_out="${WORK_DIR}/rendered-${VALIDATED_COUNT}-${env_name}.yaml"
+  prepare_target_inputs "$env_name" "$target" "$kustomize_out"
 
   echo "========================================"
   echo "Validating $target (env=$env_name, mode=$RESOLVED_KIND)"
@@ -541,10 +569,10 @@ validate_target() {
   kubeconform -summary -strict -ignore-missing-schemas \
     -schema-location default \
     -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-    "$rendered"
+    "${TARGET_INPUT_FILES[@]}"
 
   echo "--- pluto ---"
-  pluto detect "$rendered"
+  run_pluto_on_inputs
 
   echo "--- conftest ($env_name) ---"
   local data_json="${WORK_DIR}/policy-data.json"
@@ -563,7 +591,7 @@ validate_target() {
   conftest test --no-color --combine --all-namespaces \
     -p "$POLICY_DIR" \
     -d "$data_json" \
-    "$rendered" > "$conftest_out" 2>&1 || conftest_rc=$?
+    "${TARGET_INPUT_FILES[@]}" > "$conftest_out" 2>&1 || conftest_rc=$?
 
   cat "$conftest_out"
 
