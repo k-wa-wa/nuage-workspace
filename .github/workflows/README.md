@@ -32,35 +32,40 @@ jobs:
 
 ### `k8s-validate.yml`
 
-`prod`・`preview` それぞれの Kustomize オーバーレイに加え、単体 YAML ファイル・非 Kustomize フォルダ・`kustomization.yaml(.yml)` / `Kustomization` 直接指定・glob パターンおよび `common` 環境（標準チェックのみ）を検証できる。
+`targets` に渡した対象（Kustomize ディレクトリ、`kustomization.yaml(.yml)` / `Kustomization`、単体 YAML ファイル、非 Kustomize フォルダ、glob パターン）を自動判別し、標準チェック（`kubeconform` / `pluto` / `workload.rego`、および `yamllint-path` 指定時は `yamllint`）を実行する。さらに `prod: true` で `ha.rego`、`preview: true` で `preview.rego` を追加適用できる（`prod` と `preview` の同時指定は不可）。
 
 ```yaml
 permissions:
   contents: read
 
 jobs:
-  validate-k8s:
+  validate-prod:
     uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
     with:
+      targets: "k8s/overlays/prod"
+      prod: true
       yamllint-path: "k8s"
-      prod-overlays: "k8s/overlays/prod"
-      preview-overlays: "k8s/overlays/preview"
+
+  validate-preview:
+    uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
+    with:
+      targets: "k8s/overlays/preview"
+      preview: true
 ```
 
-ファイル・ディレクトリ・glob を混在させる場合は `common-targets` / `prod-targets` / `preview-targets`（または単一環境向けの `targets` + `env`）を使う。なお、これら新入力または位置引数を使う場合、`yamllint` は `yamllint-path`（ローカルでは `--yamllint-path` / `YAMLLINT_PATH`）を明示したときだけ実行される（既存プロジェクトで `fail-on-policy: true` によるポリシー違反を段階的に解消する場合は、`fail-on-policy: false` や `nuage.io/ignore-*` アノテーションと併用する）。
+複数ターゲットを混在させる場合は `targets` にカンマまたは改行区切りで並べる（既存プロジェクトで段階的に導入する場合は `fail-on-policy: false` や `nuage.io/ignore-*` アノテーションと併用する）。
 
 ```yaml
 jobs:
-  validate-k8s:
+  validate-common:
     uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
     with:
       enable-helm: true
       yamllint-path: "manifests"
       fail-on-policy: false
-      common-targets: |
+      targets: |
         manifests/bootstrap/kustomization.yaml
         manifests/apps/*.yaml
-      prod-targets: "manifests/apps/*/overlays/prod"
 ```
 
 #### ローカル実行（各リポジトリの `k8s/lint.sh`）
@@ -85,8 +90,8 @@ else
   RUNNER="${TMP_DIR}/nuage-workspace-master/.github/workflows/validate/k8s/run.sh"
 fi
 
-# 従来どおり環境変数または引数で実行する
-# 例: "$RUNNER" --env prod manifests/apps/*/overlays/prod
-# 例: "$RUNNER" --env common manifests/bootstrap/kustomization.yaml manifests/apps/*.yaml
-"$RUNNER"
+# 例: "$RUNNER" --yamllint-path k8s --prod k8s/overlays/prod
+# 例: "$RUNNER" --preview k8s/overlays/preview
+# 例: "$RUNNER" manifests/bootstrap/kustomization.yaml manifests/apps/*.yaml
+"$RUNNER" --prod k8s/overlays/prod
 ```

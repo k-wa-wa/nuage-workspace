@@ -3,33 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-YAMLLINT_PATH_EXPLICIT=false
-PROD_OVERLAYS_EXPLICIT=false
-PREVIEW_OVERLAYS_EXPLICIT=false
-NEW_TARGETS_SPECIFIED=false
-
-if [ "${YAMLLINT_PATH+set}" = "set" ]; then
-  YAMLLINT_PATH_EXPLICIT=true
-fi
-if [ "${PROD_OVERLAYS+set}" = "set" ]; then
-  PROD_OVERLAYS_EXPLICIT=true
-fi
-if [ "${PREVIEW_OVERLAYS+set}" = "set" ]; then
-  PREVIEW_OVERLAYS_EXPLICIT=true
-fi
-if [ -n "${TARGETS:-}" ] || [ -n "${COMMON_TARGETS:-}" ] || [ "${PROD_TARGETS+set}" = "set" ] || [ "${PREVIEW_TARGETS+set}" = "set" ]; then
-  NEW_TARGETS_SPECIFIED=true
-fi
-
-YAMLLINT_PATH="${YAMLLINT_PATH-}"
-PROD_OVERLAYS="${PROD_OVERLAYS-}"
-PREVIEW_OVERLAYS="${PREVIEW_OVERLAYS-}"
 TARGETS="${TARGETS:-}"
-COMMON_TARGETS="${COMMON_TARGETS:-}"
-PROD_TARGETS="${PROD_TARGETS:-}"
-PREVIEW_TARGETS="${PREVIEW_TARGETS:-}"
-TARGET_ENV="${TARGET_ENV:-common}"
-TARGET_MODE="${TARGET_MODE:-auto}"
+PROD="${PROD:-false}"
+PREVIEW="${PREVIEW:-false}"
+YAMLLINT_PATH="${YAMLLINT_PATH:-}"
 ENABLE_HELM="${ENABLE_HELM:-false}"
 OWN_IMAGE_PREFIXES="${OWN_IMAGE_PREFIXES-ghcr.io/k-wa-wa/}"
 EXCLUDE_HELM_MANAGED="${EXCLUDE_HELM_MANAGED:-true}"
@@ -43,23 +20,19 @@ RESOLVED_KIND=""
 
 usage() {
   cat << 'EOF'
-Usage: run.sh [OPTIONS] [target...]
+Usage: run.sh [OPTIONS] <target...>
 
 Kubernetes マニフェストの共通検証（yamllint / kustomize / kubeconform / pluto / conftest）を実行する。
 ターゲットには Kustomize ディレクトリ、kustomization.yaml(.yml) / Kustomization ファイル、単体 YAML ファイル、
-非 Kustomize フォルダ、および glob パターンを指定できる。
+非 Kustomize フォルダ、および glob パターンを自動判別して指定できる。
+既定では標準チェック（common: yamllint + kubeconform + pluto + workload.rego）のみを実行する。
 各オプションは環境変数でも指定できる（CLI 引数が優先される）。
 
 Options:
-  --env <common|prod|preview>     位置引数・--targets に適用する環境（既定: common / TARGET_ENV）
-  --mode <auto|kustomize|yaml>    ターゲット解釈モード（既定: auto / TARGET_MODE）
-  --targets <targets>             検証対象一覧（カンマまたは改行区切り。--env の環境を適用 / TARGETS）
-  --common-targets <targets>      common 環境として検証する対象一覧（カンマまたは改行区切り / COMMON_TARGETS）
-  --prod-targets <targets>        prod 環境として検証する対象一覧（カンマまたは改行区切り / PROD_TARGETS）
-  --preview-targets <targets>     preview 環境として検証する対象一覧（カンマまたは改行区切り / PREVIEW_TARGETS）
-  --yamllint-path <path>          yamllint の対象パス（空でスキップ。従来モード既定: k8s / YAMLLINT_PATH）
-  --prod-overlays <targets>       prod 対象一覧（後方互換。従来モード既定: k8s/overlays/prod / PROD_OVERLAYS）
-  --preview-overlays <targets>    preview 対象一覧（後方互換。従来モード既定: k8s/overlays/preview / PREVIEW_OVERLAYS）
+  --prod                          標準チェックに加えて prod 用 HA チェック（ha.rego）を実行する（PROD=true）
+  --preview                       標準チェックに加えて preview 用チェック（preview.rego）を実行する（PREVIEW=true）
+  --targets <targets>             検証対象一覧（カンマまたは改行区切り。位置引数と併用可 / TARGETS）
+  --yamllint-path <path>          yamllint の対象パス（空でスキップ。既定: "" / YAMLLINT_PATH）
   --enable-helm [true|false]      kustomize build に --enable-helm を付与する（既定: false / ENABLE_HELM）
   --own-image-prefixes <prefixes> 自前イメージプレフィックス一覧（カンマ区切り。既定: ghcr.io/k-wa-wa/ / OWN_IMAGE_PREFIXES）
   --exclude-helm-managed <bool>   Helm 管理リソースをワークロードポリシーから除外する（既定: true / EXCLUDE_HELM_MANAGED）
@@ -76,99 +49,48 @@ parse_cli_args() {
         usage
         exit 0
         ;;
-      --env=*)
-        TARGET_ENV="${1#*=}"
+      --prod=*)
+        PROD="${1#*=}"
         shift
         ;;
-      --env)
-        [ "$#" -ge 2 ] || { echo "❌ --env requires a value." >&2; exit 1; }
-        TARGET_ENV="$2"
-        shift 2
+      --prod)
+        if [ "$#" -ge 2 ] && { [ "$2" = "true" ] || [ "$2" = "false" ]; }; then
+          PROD="$2"
+          shift 2
+        else
+          PROD="true"
+          shift
+        fi
         ;;
-      --mode=*)
-        TARGET_MODE="${1#*=}"
+      --preview=*)
+        PREVIEW="${1#*=}"
         shift
         ;;
-      --mode)
-        [ "$#" -ge 2 ] || { echo "❌ --mode requires a value." >&2; exit 1; }
-        TARGET_MODE="$2"
-        shift 2
+      --preview)
+        if [ "$#" -ge 2 ] && { [ "$2" = "true" ] || [ "$2" = "false" ]; }; then
+          PREVIEW="$2"
+          shift 2
+        else
+          PREVIEW="true"
+          shift
+        fi
         ;;
       --targets=*)
         TARGETS="${1#*=}"
-        NEW_TARGETS_SPECIFIED=true
         shift
         ;;
       --targets)
         [ "$#" -ge 2 ] || { echo "❌ --targets requires a value." >&2; exit 1; }
         TARGETS="$2"
-        NEW_TARGETS_SPECIFIED=true
-        shift 2
-        ;;
-      --common-targets=*)
-        COMMON_TARGETS="${1#*=}"
-        NEW_TARGETS_SPECIFIED=true
-        shift
-        ;;
-      --common-targets)
-        [ "$#" -ge 2 ] || { echo "❌ --common-targets requires a value." >&2; exit 1; }
-        COMMON_TARGETS="$2"
-        NEW_TARGETS_SPECIFIED=true
-        shift 2
-        ;;
-      --prod-targets=*)
-        PROD_TARGETS="${1#*=}"
-        NEW_TARGETS_SPECIFIED=true
-        shift
-        ;;
-      --prod-targets)
-        [ "$#" -ge 2 ] || { echo "❌ --prod-targets requires a value." >&2; exit 1; }
-        PROD_TARGETS="$2"
-        NEW_TARGETS_SPECIFIED=true
-        shift 2
-        ;;
-      --preview-targets=*)
-        PREVIEW_TARGETS="${1#*=}"
-        NEW_TARGETS_SPECIFIED=true
-        shift
-        ;;
-      --preview-targets)
-        [ "$#" -ge 2 ] || { echo "❌ --preview-targets requires a value." >&2; exit 1; }
-        PREVIEW_TARGETS="$2"
-        NEW_TARGETS_SPECIFIED=true
         shift 2
         ;;
       --yamllint-path=*)
         YAMLLINT_PATH="${1#*=}"
-        YAMLLINT_PATH_EXPLICIT=true
         shift
         ;;
       --yamllint-path)
         [ "$#" -ge 2 ] || { echo "❌ --yamllint-path requires a value." >&2; exit 1; }
         YAMLLINT_PATH="$2"
-        YAMLLINT_PATH_EXPLICIT=true
-        shift 2
-        ;;
-      --prod-overlays=*)
-        PROD_OVERLAYS="${1#*=}"
-        PROD_OVERLAYS_EXPLICIT=true
-        shift
-        ;;
-      --prod-overlays)
-        [ "$#" -ge 2 ] || { echo "❌ --prod-overlays requires a value." >&2; exit 1; }
-        PROD_OVERLAYS="$2"
-        PROD_OVERLAYS_EXPLICIT=true
-        shift 2
-        ;;
-      --preview-overlays=*)
-        PREVIEW_OVERLAYS="${1#*=}"
-        PREVIEW_OVERLAYS_EXPLICIT=true
-        shift
-        ;;
-      --preview-overlays)
-        [ "$#" -ge 2 ] || { echo "❌ --preview-overlays requires a value." >&2; exit 1; }
-        PREVIEW_OVERLAYS="$2"
-        PREVIEW_OVERLAYS_EXPLICIT=true
         shift 2
         ;;
       --enable-helm=*)
@@ -224,7 +146,6 @@ parse_cli_args() {
         shift
         while [ "$#" -gt 0 ]; do
           POSITIONAL_TARGETS+=("$1")
-          NEW_TARGETS_SPECIFIED=true
           shift
         done
         ;;
@@ -235,35 +156,10 @@ parse_cli_args() {
         ;;
       *)
         POSITIONAL_TARGETS+=("$1")
-        NEW_TARGETS_SPECIFIED=true
         shift
         ;;
     esac
   done
-}
-
-apply_defaults() {
-  if [ "$NEW_TARGETS_SPECIFIED" = "true" ]; then
-    if [ "$PROD_OVERLAYS_EXPLICIT" = "false" ]; then
-      PROD_OVERLAYS=""
-    fi
-    if [ "$PREVIEW_OVERLAYS_EXPLICIT" = "false" ]; then
-      PREVIEW_OVERLAYS=""
-    fi
-    if [ "$YAMLLINT_PATH_EXPLICIT" = "false" ]; then
-      YAMLLINT_PATH=""
-    fi
-  else
-    if [ "$PROD_OVERLAYS_EXPLICIT" = "false" ]; then
-      PROD_OVERLAYS="k8s/overlays/prod"
-    fi
-    if [ "$PREVIEW_OVERLAYS_EXPLICIT" = "false" ]; then
-      PREVIEW_OVERLAYS="k8s/overlays/preview"
-    fi
-    if [ "$YAMLLINT_PATH_EXPLICIT" = "false" ]; then
-      YAMLLINT_PATH="k8s"
-    fi
-  fi
 }
 
 validate_bool() {
@@ -275,33 +171,8 @@ validate_bool() {
   fi
 }
 
-validate_env() {
-  local val="$1"
-  case "$val" in
-    common|prod|preview) ;;
-    *)
-      echo "❌ Invalid value for --env: '$val' (expected 'common', 'prod', or 'preview')." >&2
-      exit 1
-      ;;
-  esac
-}
-
-validate_mode() {
-  local val="$1"
-  case "$val" in
-    auto|kustomize|yaml) ;;
-    *)
-      echo "❌ Invalid value for --mode: '$val' (expected 'auto', 'kustomize', or 'yaml')." >&2
-      exit 1
-      ;;
-  esac
-}
-
 check_required_commands() {
-  local required_cmds=(kubeconform pluto conftest jq)
-  if [ "$TARGET_MODE" != "yaml" ]; then
-    required_cmds+=(kustomize)
-  fi
+  local required_cmds=(kustomize kubeconform pluto conftest jq)
   if [ -n "$YAMLLINT_PATH" ]; then
     required_cmds+=(yamllint)
   fi
@@ -455,79 +326,37 @@ prepare_target_inputs() {
     exit 1
   fi
 
-  case "$TARGET_MODE" in
-    kustomize)
-      if [ -f "$target" ]; then
-        if ! is_kustomization_filename "$(basename "$target")"; then
-          echo "❌ Target '$target' (env=$env_name) is not a kustomization file (mode=kustomize)." >&2
-          exit 1
-        fi
-        run_kustomize_build "$(dirname "$target")" "$kustomize_out"
-        TARGET_INPUT_FILES=("$kustomize_out")
-        RESOLVED_KIND="kustomize"
-      elif [ -d "$target" ]; then
-        if ! has_kustomization_in_dir "$target"; then
-          echo "❌ Directory '$target' (env=$env_name) does not contain kustomization.yaml/.yml/Kustomization (mode=kustomize)." >&2
-          exit 1
-        fi
-        run_kustomize_build "$target" "$kustomize_out"
-        TARGET_INPUT_FILES=("$kustomize_out")
-        RESOLVED_KIND="kustomize"
-      else
-        echo "❌ Target '$target' (env=$env_name) is neither a regular file nor a directory." >&2
+  if [ -f "$target" ]; then
+    local base
+    base="$(basename "$target")"
+    if is_kustomization_filename "$base"; then
+      run_kustomize_build "$(dirname "$target")" "$kustomize_out"
+      TARGET_INPUT_FILES=("$kustomize_out")
+      RESOLVED_KIND="kustomize"
+    elif [[ "$base" == *.yaml || "$base" == *.yml ]]; then
+      if ! has_yaml_content "$target"; then
+        echo "❌ YAML file '$target' (env=$env_name) is empty." >&2
         exit 1
       fi
-      ;;
-    yaml)
-      if [ -f "$target" ]; then
-        if ! has_yaml_content "$target"; then
-          echo "❌ YAML file '$target' (env=$env_name) is empty." >&2
-          exit 1
-        fi
-        TARGET_INPUT_FILES=("$target")
-        RESOLVED_KIND="yaml-file"
-      elif [ -d "$target" ]; then
-        collect_yaml_dir_files "$env_name" "$target"
-        RESOLVED_KIND="yaml-dir"
-      else
-        echo "❌ Target '$target' (env=$env_name) is neither a regular file nor a directory." >&2
-        exit 1
-      fi
-      ;;
-    auto)
-      if [ -f "$target" ]; then
-        local base
-        base="$(basename "$target")"
-        if is_kustomization_filename "$base"; then
-          run_kustomize_build "$(dirname "$target")" "$kustomize_out"
-          TARGET_INPUT_FILES=("$kustomize_out")
-          RESOLVED_KIND="kustomize"
-        elif [[ "$base" == *.yaml || "$base" == *.yml ]]; then
-          if ! has_yaml_content "$target"; then
-            echo "❌ YAML file '$target' (env=$env_name) is empty." >&2
-            exit 1
-          fi
-          TARGET_INPUT_FILES=("$target")
-          RESOLVED_KIND="yaml-file"
-        else
-          echo "❌ Unsupported file '$target' (env=$env_name) in mode=auto (expected .yaml, .yml, or Kustomization)." >&2
-          exit 1
-        fi
-      elif [ -d "$target" ]; then
-        if has_kustomization_in_dir "$target"; then
-          run_kustomize_build "$target" "$kustomize_out"
-          TARGET_INPUT_FILES=("$kustomize_out")
-          RESOLVED_KIND="kustomize"
-        else
-          collect_yaml_dir_files "$env_name" "$target"
-          RESOLVED_KIND="yaml-dir"
-        fi
-      else
-        echo "❌ Target '$target' (env=$env_name) is neither a regular file nor a directory." >&2
-        exit 1
-      fi
-      ;;
-  esac
+      TARGET_INPUT_FILES=("$target")
+      RESOLVED_KIND="yaml-file"
+    else
+      echo "❌ Unsupported file '$target' (env=$env_name) (expected .yaml, .yml, or Kustomization)." >&2
+      exit 1
+    fi
+  elif [ -d "$target" ]; then
+    if has_kustomization_in_dir "$target"; then
+      run_kustomize_build "$target" "$kustomize_out"
+      TARGET_INPUT_FILES=("$kustomize_out")
+      RESOLVED_KIND="kustomize"
+    else
+      collect_yaml_dir_files "$env_name" "$target"
+      RESOLVED_KIND="yaml-dir"
+    fi
+  else
+    echo "❌ Target '$target' (env=$env_name) is neither a regular file nor a directory." >&2
+    exit 1
+  fi
 }
 
 run_pluto_on_inputs() {
@@ -562,7 +391,7 @@ validate_target() {
   prepare_target_inputs "$env_name" "$target" "$kustomize_out"
 
   echo "========================================"
-  echo "Validating $target (env=$env_name, mode=$RESOLVED_KIND)"
+  echo "Validating $target (env=$env_name, type=$RESOLVED_KIND)"
   echo "========================================"
 
   echo "--- kubeconform ---"
@@ -609,29 +438,39 @@ validate_target() {
   fi
 }
 
-validate_target_list() {
-  local env_name="$1"
-  local raw_list="$2"
-  local tokens=()
-  local token resolved
-
-  mapfile -t tokens < <(parse_target_list "$raw_list")
-  for token in "${tokens[@]}"; do
-    resolve_target_token "$env_name" "$token"
-    for resolved in "${RESOLVED_TARGETS[@]}"; do
-      validate_target "$env_name" "$resolved"
-    done
-  done
-}
-
 parse_cli_args "$@"
-apply_defaults
 
-validate_env "$TARGET_ENV"
-validate_mode "$TARGET_MODE"
+validate_bool "PROD" "$PROD"
+validate_bool "PREVIEW" "$PREVIEW"
 validate_bool "ENABLE_HELM" "$ENABLE_HELM"
 validate_bool "EXCLUDE_HELM_MANAGED" "$EXCLUDE_HELM_MANAGED"
 validate_bool "FAIL_ON_POLICY" "$FAIL_ON_POLICY"
+
+if [ "$PROD" = "true" ] && [ "$PREVIEW" = "true" ]; then
+  echo "❌ --prod and --preview cannot be specified at the same time." >&2
+  exit 1
+fi
+
+ENV_NAME="common"
+if [ "$PROD" = "true" ]; then
+  ENV_NAME="prod"
+elif [ "$PREVIEW" = "true" ]; then
+  ENV_NAME="preview"
+fi
+
+TARGET_TOKENS=("${POSITIONAL_TARGETS[@]}")
+if [ -n "$TARGETS" ]; then
+  mapfile -t EXTRA_TOKENS < <(parse_target_list "$TARGETS")
+  if [ "${#EXTRA_TOKENS[@]}" -gt 0 ]; then
+    TARGET_TOKENS+=("${EXTRA_TOKENS[@]}")
+  fi
+fi
+
+if [ "${#TARGET_TOKENS[@]}" -eq 0 ]; then
+  echo "❌ No targets specified." >&2
+  usage >&2
+  exit 1
+fi
 
 if [ ! -d "$POLICY_DIR" ]; then
   echo "❌ Policy directory '$POLICY_DIR' does not exist." >&2
@@ -654,31 +493,18 @@ VALIDATED_COUNT=0
 {
   echo "### Kubernetes Manifest Validation"
   echo ""
+  echo "- \`env\`: \`${ENV_NAME}\`"
   echo "- \`fail-on-policy\`: \`${FAIL_ON_POLICY}\`"
   echo "- \`own-image-prefixes\`: \`${OWN_IMAGE_PREFIXES}\`"
   echo ""
 } | write_summary
 
-if [ "${#POSITIONAL_TARGETS[@]}" -gt 0 ]; then
-  for token in "${POSITIONAL_TARGETS[@]}"; do
-    resolve_target_token "$TARGET_ENV" "$token"
-    for resolved in "${RESOLVED_TARGETS[@]}"; do
-      validate_target "$TARGET_ENV" "$resolved"
-    done
+for token in "${TARGET_TOKENS[@]}"; do
+  resolve_target_token "$ENV_NAME" "$token"
+  for resolved in "${RESOLVED_TARGETS[@]}"; do
+    validate_target "$ENV_NAME" "$resolved"
   done
-fi
-
-validate_target_list "$TARGET_ENV" "$TARGETS"
-validate_target_list "common" "$COMMON_TARGETS"
-validate_target_list "prod" "$PROD_TARGETS"
-validate_target_list "prod" "$PROD_OVERLAYS"
-validate_target_list "preview" "$PREVIEW_TARGETS"
-validate_target_list "preview" "$PREVIEW_OVERLAYS"
-
-if [ "$VALIDATED_COUNT" -eq 0 ]; then
-  echo "❌ No targets were validated. Specify targets via positional args, --targets, --common-targets, --prod-targets/--prod-overlays, or --preview-targets/--preview-overlays." >&2
-  exit 1
-fi
+done
 
 if [ "$POLICY_FAILED" -ne 0 ]; then
   if [ "$FAIL_ON_POLICY" = "true" ]; then

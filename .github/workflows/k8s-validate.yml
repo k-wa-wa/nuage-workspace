@@ -3,42 +3,22 @@ name: Kubernetes Manifest Validate (Reusable)
 on:
   workflow_call:
     inputs:
+      targets:
+        description: "検証対象パス一覧（カンマまたは改行区切り。ファイル/フォルダ/kustomization.yaml(.yml)/Kustomization/glob 可）"
+        type: string
+        required: true
+      prod:
+        description: "標準チェックに加えて prod 用 HA チェック（ha.rego）を有効にするか（preview とは排他）"
+        type: boolean
+        default: false
+      preview:
+        description: "標準チェックに加えて preview 用チェック（preview.rego）を有効にするか（prod とは排他）"
+        type: boolean
+        default: false
       yamllint-path:
         description: "yamllint を実行する対象パス（空の場合はスキップ）"
         type: string
-        default: "k8s"
-      targets:
-        description: "検証対象パス一覧（カンマまたは改行区切り。ファイル/ディレクトリ/kustomization.yaml/glob 可。env で環境を指定）"
-        type: string
         default: ""
-      env:
-        description: "targets に適用する環境ポリシー（common / prod / preview）"
-        type: string
-        default: "common"
-      mode:
-        description: "ターゲット解釈モード（auto / kustomize / yaml）"
-        type: string
-        default: "auto"
-      common-targets:
-        description: "common 環境として検証する対象パス一覧（カンマまたは改行区切り。ファイル/ディレクトリ/kustomization.yaml/glob 可）"
-        type: string
-        default: ""
-      prod-targets:
-        description: "prod 環境として検証する対象パス一覧（カンマまたは改行区切り。prod-overlays の汎用版）"
-        type: string
-        default: ""
-      preview-targets:
-        description: "preview 環境として検証する対象パス一覧（カンマまたは改行区切り。preview-overlays の汎用版）"
-        type: string
-        default: ""
-      prod-overlays:
-        description: "prod 環境として検証する対象パス一覧（後方互換。ファイル/ディレクトリ/kustomization.yaml/glob も指定可、空の場合はスキップ）"
-        type: string
-        default: "k8s/overlays/prod"
-      preview-overlays:
-        description: "preview 環境として検証する対象パス一覧（後方互換。ファイル/ディレクトリ/kustomization.yaml/glob も指定可、空の場合はスキップ）"
-        type: string
-        default: "k8s/overlays/preview"
       enable-helm:
         description: "kustomize build に --enable-helm を付与するか"
         type: boolean
@@ -169,48 +149,12 @@ jobs:
 
       - name: Run K8s validation
         env:
-          INPUT_YAMLLINT_PATH: ${{ inputs.yamllint-path }}
-          INPUT_TARGETS: ${{ inputs.targets }}
-          INPUT_ENV: ${{ inputs.env }}
-          INPUT_MODE: ${{ inputs.mode }}
-          INPUT_COMMON_TARGETS: ${{ inputs.common-targets }}
-          INPUT_PROD_TARGETS: ${{ inputs.prod-targets }}
-          INPUT_PREVIEW_TARGETS: ${{ inputs.preview-targets }}
-          INPUT_PROD_OVERLAYS: ${{ inputs.prod-overlays }}
-          INPUT_PREVIEW_OVERLAYS: ${{ inputs.preview-overlays }}
+          TARGETS: ${{ inputs.targets }}
+          PROD: ${{ inputs.prod }}
+          PREVIEW: ${{ inputs.preview }}
+          YAMLLINT_PATH: ${{ inputs.yamllint-path }}
           ENABLE_HELM: ${{ inputs.enable-helm }}
           OWN_IMAGE_PREFIXES: ${{ inputs.own-image-prefixes }}
           EXCLUDE_HELM_MANAGED: ${{ inputs.exclude-helm-managed }}
           FAIL_ON_POLICY: ${{ inputs.fail-on-policy }}
-        run: |
-          set -euo pipefail
-          has_new_targets=false
-          if [ -n "${INPUT_TARGETS}${INPUT_COMMON_TARGETS}${INPUT_PROD_TARGETS}${INPUT_PREVIEW_TARGETS}" ]; then
-            has_new_targets=true
-          fi
-
-          if [ "$has_new_targets" = "true" ]; then
-            export TARGETS="$INPUT_TARGETS"
-            export TARGET_ENV="$INPUT_ENV"
-            export TARGET_MODE="$INPUT_MODE"
-            export COMMON_TARGETS="$INPUT_COMMON_TARGETS"
-            export PROD_TARGETS="$INPUT_PROD_TARGETS"
-            export PREVIEW_TARGETS="$INPUT_PREVIEW_TARGETS"
-            if [ "$INPUT_PROD_OVERLAYS" != "k8s/overlays/prod" ]; then
-              export PROD_OVERLAYS="$INPUT_PROD_OVERLAYS"
-            fi
-            if [ "$INPUT_PREVIEW_OVERLAYS" != "k8s/overlays/preview" ]; then
-              export PREVIEW_OVERLAYS="$INPUT_PREVIEW_OVERLAYS"
-            fi
-            if [ "$INPUT_YAMLLINT_PATH" != "k8s" ]; then
-              export YAMLLINT_PATH="$INPUT_YAMLLINT_PATH"
-            fi
-          else
-            export YAMLLINT_PATH="$INPUT_YAMLLINT_PATH"
-            export PROD_OVERLAYS="$INPUT_PROD_OVERLAYS"
-            export PREVIEW_OVERLAYS="$INPUT_PREVIEW_OVERLAYS"
-            export TARGET_ENV="$INPUT_ENV"
-            export TARGET_MODE="$INPUT_MODE"
-          fi
-
-          .nuage-workspace-policies/.github/workflows/validate/k8s/run.sh
+        run: .nuage-workspace-policies/.github/workflows/validate/k8s/run.sh
