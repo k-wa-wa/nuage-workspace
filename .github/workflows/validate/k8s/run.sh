@@ -16,6 +16,7 @@ POLICY_DIR="${POLICY_DIR:-$SCRIPT_DIR}"
 POSITIONAL_TARGETS=()
 RESOLVED_TARGETS=()
 TARGET_INPUT_FILES=()
+PRUNED_SUBTREES=()
 RESOLVED_KIND=""
 
 usage() {
@@ -279,8 +280,20 @@ collect_yaml_dir_files() {
   local env_name="$1"
   local dir="$2"
   TARGET_INPUT_FILES=()
+  PRUNED_SUBTREES=()
 
   # 配下の独立した Kustomize サブディレクトリや Helm チャートディレクトリは生 YAML 群へ混入させない
+  mapfile -t PRUNED_SUBTREES < <(
+    find "$dir" \
+      -type d ! -path "$dir" \( \
+        -exec test -e '{}/kustomization.yaml' \; \
+        -o -exec test -e '{}/kustomization.yml' \; \
+        -o -exec test -e '{}/Kustomization' \; \
+        -o -exec test -e '{}/Chart.yaml' \; \
+      \) -prune -print \
+      | LC_ALL=C sort
+  )
+
   mapfile -t TARGET_INPUT_FILES < <(
     find "$dir" \
       \( -type d ! -path "$dir" \( \
@@ -319,6 +332,7 @@ prepare_target_inputs() {
   local target="$2"
   local kustomize_out="$3"
   TARGET_INPUT_FILES=()
+  PRUNED_SUBTREES=()
   RESOLVED_KIND=""
 
   if [ ! -e "$target" ]; then
@@ -394,6 +408,11 @@ validate_target() {
   echo "Validating $target (env=$env_name, type=$RESOLVED_KIND)"
   echo "========================================"
 
+  if [ "${#PRUNED_SUBTREES[@]}" -gt 0 ]; then
+    echo "ℹ️ Skipped nested Kustomize/Helm subtrees under '$target' (specify explicitly to validate):"
+    printf '  - %s\n' "${PRUNED_SUBTREES[@]}"
+  fi
+
   echo "--- kubeconform ---"
   kubeconform -summary -strict -ignore-missing-schemas \
     -schema-location default \
@@ -427,6 +446,14 @@ validate_target() {
   {
     echo "#### \`${target}\` (\`env=${env_name}\`)"
     echo ""
+    if [ "${#PRUNED_SUBTREES[@]}" -gt 0 ]; then
+      echo "Skipped nested Kustomize/Helm subtrees (specify explicitly to validate):"
+      local subtree
+      for subtree in "${PRUNED_SUBTREES[@]}"; do
+        echo "- \`${subtree}\`"
+      done
+      echo ""
+    fi
     echo '```text'
     cat "$conftest_out"
     echo '```'

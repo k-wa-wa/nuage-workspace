@@ -458,10 +458,18 @@ printf 'invalid_for_kubeconform: true\n' > "${EXT_REPO}/bundle/nested-kust/broke
 printf 'apiVersion: v2\nname: dummy\nversion: 0.1.0\n' > "${EXT_REPO}/bundle/nested-chart/Chart.yaml"
 printf '{{ invalid helm template }}\n' > "${EXT_REPO}/bundle/nested-chart/templates/deploy.yaml"
 
+BUNDLE_OUT="${TMP_ROOT}/bundle.out"
+SUMMARY_BUNDLE="${TMP_ROOT}/summary-bundle.md"
 (
   cd "$EXT_REPO"
-  env -u GITHUB_STEP_SUMMARY "$RUNNER" bundle
+  GITHUB_STEP_SUMMARY="$SUMMARY_BUNDLE" "$RUNNER" bundle >"$BUNDLE_OUT" 2>&1
 )
+grep -q "Skipped nested Kustomize/Helm subtrees" "$BUNDLE_OUT"
+grep -q "bundle/nested-kust" "$BUNDLE_OUT"
+grep -q "bundle/nested-chart" "$BUNDLE_OUT"
+grep -q "Skipped nested Kustomize/Helm subtrees" "$SUMMARY_BUNDLE"
+grep -qF "\`bundle/nested-kust\`" "$SUMMARY_BUNDLE"
+grep -qF "\`bundle/nested-chart\`" "$SUMMARY_BUNDLE"
 
 # kubeconform エラーに一時ファイル名ではなく元のファイル名が含まれること
 cat << 'EOF' > "${EXT_REPO}/bundle/bad-schema.yaml"
