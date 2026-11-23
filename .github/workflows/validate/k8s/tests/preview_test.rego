@@ -138,3 +138,18 @@ test_prod_allows_cluster_resources if {
 	denies := main.deny with input as [cr, vmrule] with data.env as "prod"
 	count(denies) == 0
 }
+
+# 例外系: common 環境では preview 固有ルール（ClusterRole 禁止 / Namespace 1件 / Ingress ルール / namespace 固定 warn）を発火しない
+test_common_skips_preview_checks if {
+	cr := {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole", "metadata": {"name": "ok-cr"}}
+	bad_ing := {
+		"apiVersion": "networking.k8s.io/v1",
+		"kind": "Ingress",
+		"metadata": {"name": "prod-ing", "namespace": "app-prod"},
+		"spec": {"rules": [{"host": "app.wpcapp.net"}]},
+	}
+	denies := main.deny with input as [cr, bad_ing] with data.env as "common"
+	warns := main.warn with input as [cr, bad_ing] with data.env as "common"
+	count(denies) == 0
+	count(warns) == 0
+}

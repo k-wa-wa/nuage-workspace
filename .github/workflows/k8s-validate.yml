@@ -3,18 +3,22 @@ name: Kubernetes Manifest Validate (Reusable)
 on:
   workflow_call:
     inputs:
+      targets:
+        description: "検証対象パス一覧（カンマまたは改行区切り。ファイル/フォルダ/kustomization.yaml(.yml)/Kustomization/glob 可）"
+        type: string
+        required: true
+      prod:
+        description: "標準チェックに加えて prod 用 HA チェック（ha.rego）を有効にするか（preview とは排他）"
+        type: boolean
+        default: false
+      preview:
+        description: "標準チェックに加えて preview 用チェック（preview.rego）を有効にするか（prod とは排他）"
+        type: boolean
+        default: false
       yamllint-path:
         description: "yamllint を実行する対象パス（空の場合はスキップ）"
         type: string
-        default: "k8s"
-      prod-overlays:
-        description: "prod 環境として検証する Kustomize オーバーレイパス（カンマまたは改行区切り、空の場合はスキップ）"
-        type: string
-        default: "k8s/overlays/prod"
-      preview-overlays:
-        description: "preview 環境として検証する Kustomize オーバーレイパス（カンマまたは改行区切り、空の場合はスキップ）"
-        type: string
-        default: "k8s/overlays/preview"
+        default: ""
       enable-helm:
         description: "kustomize build に --enable-helm を付与するか"
         type: boolean
@@ -145,9 +149,10 @@ jobs:
 
       - name: Run K8s validation
         env:
+          TARGETS: ${{ inputs.targets }}
+          PROD: ${{ inputs.prod }}
+          PREVIEW: ${{ inputs.preview }}
           YAMLLINT_PATH: ${{ inputs.yamllint-path }}
-          PROD_OVERLAYS: ${{ inputs.prod-overlays }}
-          PREVIEW_OVERLAYS: ${{ inputs.preview-overlays }}
           ENABLE_HELM: ${{ inputs.enable-helm }}
           OWN_IMAGE_PREFIXES: ${{ inputs.own-image-prefixes }}
           EXCLUDE_HELM_MANAGED: ${{ inputs.exclude-helm-managed }}

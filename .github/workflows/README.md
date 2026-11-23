@@ -32,19 +32,40 @@ jobs:
 
 ### `k8s-validate.yml`
 
-`prod`・`preview` それぞれの Kustomize オーバーレイを検証する。
+`targets` に渡した対象（Kustomize ディレクトリ、`kustomization.yaml(.yml)` / `Kustomization`、単体 YAML ファイル、非 Kustomize フォルダ、glob パターン）を自動判別し、標準チェック（`kubeconform` / `pluto` / `workload.rego`、および `yamllint-path` 指定時は `yamllint`）を実行する。さらに `prod: true` で `ha.rego`、`preview: true` で `preview.rego` を追加適用できる（`prod` と `preview` の同時指定は不可）。
 
 ```yaml
 permissions:
   contents: read
 
 jobs:
-  validate-k8s:
+  validate-prod:
     uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
     with:
+      targets: "k8s/overlays/prod"
+      prod: true
       yamllint-path: "k8s"
-      prod-overlays: "k8s/overlays/prod"
-      preview-overlays: "k8s/overlays/preview"
+
+  validate-preview:
+    uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
+    with:
+      targets: "k8s/overlays/preview"
+      preview: true
+```
+
+複数ターゲットを混在させる場合は `targets` にカンマまたは改行区切りで並べる（既存プロジェクトで段階的に導入する場合は `fail-on-policy: false` や `nuage.io/ignore-*` アノテーションと併用する）。
+
+```yaml
+jobs:
+  validate-common:
+    uses: k-wa-wa/nuage-workspace/.github/workflows/k8s-validate.yml@master
+    with:
+      enable-helm: true
+      yamllint-path: "manifests"
+      fail-on-policy: false
+      targets: |
+        manifests/bootstrap/kustomization.yaml
+        manifests/apps/*.yaml
 ```
 
 #### ローカル実行（各リポジトリの `k8s/lint.sh`）
@@ -69,6 +90,8 @@ else
   RUNNER="${TMP_DIR}/nuage-workspace-master/.github/workflows/validate/k8s/run.sh"
 fi
 
-# 必要に応じて環境変数（PROD_OVERLAYS / PREVIEW_OVERLAYS / YAMLLINT_PATH 等）や引数を指定する
-"$RUNNER"
+# 例: "$RUNNER" --yamllint-path k8s --prod k8s/overlays/prod
+# 例: "$RUNNER" --preview k8s/overlays/preview
+# 例: "$RUNNER" manifests/bootstrap/kustomization.yaml manifests/apps/*.yaml
+"$RUNNER" --prod k8s/overlays/prod
 ```

@@ -317,3 +317,29 @@ test_helm_managed_third_party_excluded if {
 	denies := main.deny with input as [helm_dep] with data.env as "prod"
 	count(denies) == 0
 }
+
+# 環境別: common 環境では workload.rego のみが動作し、ha.rego と preview.rego は発火しない
+test_common_env_runs_only_workload_policies if {
+	# 1. HA 要件や preview 要件を満たさなくても workload 要件を満たせば PASS する
+	cr := {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole", "metadata": {"name": "cluster-admin-ext"}}
+	dep_no_ha := json.patch(valid_own_deployment, [
+		{"op": "replace", "path": "/spec/replicas", "value": 1},
+		{"op": "remove", "path": "/spec/template/spec/topologySpreadConstraints"},
+	])
+	denies_pass := main.deny with input as [cr, dep_no_ha] with data.env as "common"
+	count(denies_pass) == 0
+
+	# 2. workload.rego の違反（resources / probes / imagePullPolicy 欠落）は common 環境でも検知される
+	bad_dep := json.patch(dep_no_ha, [
+		{"op": "remove", "path": "/spec/template/spec/containers/0/imagePullPolicy"},
+		{"op": "remove", "path": "/spec/template/spec/containers/0/resources"},
+		{"op": "remove", "path": "/spec/template/spec/containers/0/readinessProbe"},
+	])
+	denies_fail := main.deny with input as [bad_dep] with data.env as "common"
+	some m_pull in denies_fail
+	contains(m_pull, "imagePullPolicy: Always")
+	some m_res in denies_fail
+	contains(m_res, "resources.requests")
+	some m_probe in denies_fail
+	contains(m_probe, "readinessProbe")
+}

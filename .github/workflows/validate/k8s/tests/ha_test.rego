@@ -158,6 +158,15 @@ test_preview_skips_ha_checks if {
 	count(denies) == 0
 }
 
+# 例外系: common 環境では replicas: 1 / 分散なし / PDB なしでも HA 違反にならない
+test_common_skips_ha_checks if {
+	dep := json.patch(ha_deployment_base, [
+		{"op": "replace", "path": "/spec/replicas", "value": 1},
+	])
+	denies := main.deny with input as [dep] with data.env as "common"
+	count(denies) == 0
+}
+
 # 正常系・異常系: HPA の minReplicas による replicas 判定
 test_hpa_min_replicas_evaluation if {
 	dep_no_replicas := json.patch(ha_deployment_base, [
