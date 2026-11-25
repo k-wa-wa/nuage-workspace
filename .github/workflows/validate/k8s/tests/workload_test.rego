@@ -343,3 +343,334 @@ test_common_env_runs_only_workload_policies if {
 	some m_probe in denies_fail
 	contains(m_probe, "readinessProbe")
 }
+
+# 異常系: 非自前イメージでも Keel 監視対象 (monitorContainers 一致) かつ imagePullPolicy != Always は deny となる
+test_keel_monitored_third_party_image_requires_pull_policy_always if {
+	dep := {
+		"apiVersion": "apps/v1",
+		"kind": "Deployment",
+		"metadata": {
+			"name": "third-party-keel",
+			"namespace": "app-ns",
+			"annotations": {
+				"keel.sh/policy": "force",
+				"keel.sh/trigger": "poll",
+				"keel.sh/matchTag": "true",
+				"keel.sh/monitorContainers": "web",
+			},
+		},
+		"spec": {
+			"replicas": 1,
+			"template": {
+				"metadata": {"labels": {"app": "third-party-keel"}},
+				"spec": {
+					"containers": [{
+						"name": "web",
+						"image": "nginx:1.27.0",
+						"resources": {
+							"requests": {"cpu": "50m", "memory": "64Mi"},
+							"limits": {"memory": "128Mi"},
+						},
+						"readinessProbe": {"httpGet": {"path": "/", "port": 80}},
+						"livenessProbe": {"httpGet": {"path": "/", "port": 80}},
+					}],
+				},
+			},
+		},
+	}
+	denies_missing := main.deny with input as [dep] with data.env as "common"
+	count(denies_missing) == 1
+	some m1 in denies_missing
+	contains(m1, "Keel 監視対象")
+	contains(m1, "imagePullPolicy: Always")
+
+	dep_if_not_present := json.patch(dep, [{
+		"op": "add",
+		"path": "/spec/template/spec/containers/0/imagePullPolicy",
+		"value": "IfNotPresent",
+	}])
+	denies_ifnp := main.deny with input as [dep_if_not_present] with data.env as "common"
+	count(denies_ifnp) == 1
+	some m2 in denies_ifnp
+	contains(m2, "IfNotPresent")
+
+	dep_always := json.patch(dep, [{
+		"op": "add",
+		"path": "/spec/template/spec/containers/0/imagePullPolicy",
+		"value": "Always",
+	}])
+	denies_always := main.deny with input as [dep_always] with data.env as "common"
+	count(denies_always) == 0
+}
+
+# 境界系: Keel 対象ワークロードでも monitorContainers に一致しない非自前サイドカーは deny されず、:latest なら warn のみとなる
+test_keel_unmonitored_sidecar_not_denied_but_latest_warns if {
+	dep := {
+		"apiVersion": "apps/v1",
+		"kind": "Deployment",
+		"metadata": {
+			"name": "bare-web-proxy",
+			"namespace": "proxy-ns",
+			"annotations": {
+				"keel.sh/policy": "force",
+				"keel.sh/trigger": "poll",
+				"keel.sh/matchTag": "true",
+				"keel.sh/monitorContainers": "proxy-app",
+			},
+		},
+		"spec": {
+			"replicas": 1,
+			"template": {
+				"metadata": {"labels": {"app": "bare-web-proxy"}},
+				"spec": {
+					"containers": [
+						{
+							"name": "proxy-app",
+							"image": "ghcr.io/k-wa-wa/bare-web-proxy:latest",
+							"imagePullPolicy": "Always",
+							"resources": {
+								"requests": {"cpu": "50m", "memory": "32Mi"},
+								"limits": {"memory": "128Mi"},
+							},
+							"readinessProbe": {"httpGet": {"path": "/healthz", "port": 3000}},
+							"livenessProbe": {"httpGet": {"path": "/healthz", "port": 3000}},
+						},
+						{
+							"name": "headless-chrome",
+							"image": "chromedp/headless-shell:latest",
+							"imagePullPolicy": "IfNotPresent",
+							"resources": {
+								"requests": {"cpu": "200m", "memory": "256Mi"},
+								"limits": {"memory": "1Gi"},
+							},
+							"readinessProbe": {"tcpSocket": {"port": 9222}},
+							"livenessProbe": {"tcpSocket": {"port": 9222}},
+						},
+					],
+				},
+			},
+		},
+	}
+	denies := main.deny with input as [dep] with data.env as "common"
+	warns := main.warn with input as [dep] with data.env as "common"
+	count(denies) == 0
+	count(warns) == 1
+	some w in warns
+	contains(w, "headless-chrome")
+	contains(w, "chromedp/headless-shell:latest")
+}
+
+# 異常系: keel.sh/monitorContainers 未指定時は全通常コンテナが Keel 監視対象となり非自前イメージも deny される（warn と重複しない）
+test_keel_without_monitor_containers_enforces_always_on_all_containers if {
+	dep := {
+		"apiVersion": "apps/v1",
+		"kind": "Deployment",
+		"metadata": {
+			"name": "keel-all",
+			"namespace": "app-ns",
+			"annotations": {
+				"keel.sh/trigger": "poll",
+			},
+		},
+		"spec": {
+			"replicas": 1,
+			"template": {
+				"metadata": {"labels": {"app": "keel-all"}},
+				"spec": {
+					"containers": [{
+						"name": "worker",
+						"image": "busybox:latest",
+						"resources": {
+							"requests": {"cpu": "10m", "memory": "16Mi"},
+							"limits": {"memory": "32Mi"},
+						},
+						"readinessProbe": {"exec": {"command": ["true"]}},
+						"livenessProbe": {"exec": {"command": ["true"]}},
+					}],
+				},
+			},
+		},
+	}
+	denies := main.deny with input as [dep] with data.env as "common"
+	warns := main.warn with input as [dep] with data.env as "common"
+	count(denies) == 1
+	count(warns) == 0
+	some m in denies
+	contains(m, "Keel 監視対象")
+}
+
+# 例外系: nuage.io/ignore-image-pull-policy: "true" で Keel 監視対象および :latest チェックがともにスキップされる
+test_ignore_image_pull_policy_skips_keel_and_latest if {
+	dep := {
+		"apiVersion": "apps/v1",
+		"kind": "Deployment",
+		"metadata": {
+			"name": "ignored-pull",
+			"namespace": "app-ns",
+			"annotations": {
+				"keel.sh/policy": "force",
+				"keel.sh/trigger": "poll",
+				"nuage.io/ignore-image-pull-policy": "true",
+			},
+		},
+		"spec": {
+			"replicas": 1,
+			"template": {
+				"metadata": {"labels": {"app": "ignored-pull"}},
+				"spec": {
+					"containers": [{
+						"name": "app",
+						"image": "busybox:latest",
+						"imagePullPolicy": "IfNotPresent",
+						"resources": {
+							"requests": {"cpu": "10m", "memory": "16Mi"},
+							"limits": {"memory": "32Mi"},
+						},
+						"readinessProbe": {"exec": {"command": ["true"]}},
+						"livenessProbe": {"exec": {"command": ["true"]}},
+					}],
+				},
+			},
+		},
+	}
+	denies := main.deny with input as [dep] with data.env as "common"
+	warns := main.warn with input as [dep] with data.env as "common"
+	count(denies) == 0
+	count(warns) == 0
+}
+
+# 境界値: :latest / タグ省略の warn 判定（ポート付きレジストリ・digest 固定・固定タグの区別）
+test_latest_and_untagged_image_warning_boundaries if {
+	job := {
+		"apiVersion": "batch/v1",
+		"kind": "Job",
+		"metadata": {"name": "tag-check", "namespace": "app-ns"},
+		"spec": {
+			"template": {
+				"spec": {
+					"restartPolicy": "Never",
+					"containers": [
+						{
+							"name": "explicit-latest-unset",
+							"image": "curlimages/curl:latest",
+							"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						},
+						{
+							"name": "untagged-ifnp",
+							"image": "busybox",
+							"imagePullPolicy": "IfNotPresent",
+							"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						},
+						{
+							"name": "port-untagged",
+							"image": "localhost:5000/app",
+							"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						},
+						{
+							"name": "latest-always",
+							"image": "cloudflare/cloudflared:latest",
+							"imagePullPolicy": "Always",
+							"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						},
+						{
+							"name": "pinned-tag",
+							"image": "nginx:1.27",
+							"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						},
+						{
+							"name": "digest-with-latest",
+							"image": "alpine:latest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+							"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						},
+						{
+							"name": "digest-without-tag",
+							"image": "ghcr.io/foo/bar@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+							"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						},
+						{
+							"name": "port-pinned-tag",
+							"image": "localhost:5000/app:v1.0.0",
+							"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						},
+					],
+				},
+			},
+		},
+	}
+	denies := main.deny with input as [job] with data.env as "common"
+	warns := main.warn with input as [job] with data.env as "common"
+	count(denies) == 0
+	count(warns) == 3
+	some w1 in warns
+	contains(w1, "explicit-latest-unset")
+	some w2 in warns
+	contains(w2, "untagged-ifnp")
+	some w3 in warns
+	contains(w3, "port-untagged")
+}
+
+# WorkflowTemplate / Job の自前イメージは deny、非自前 :latest は warn となる（重複なし）
+test_workflow_template_and_job_own_vs_third_party_latest if {
+	wf := {
+		"apiVersion": "argoproj.io/v1alpha1",
+		"kind": "WorkflowTemplate",
+		"metadata": {"name": "mixed-wf", "namespace": "app-ns"},
+		"spec": {
+			"templates": [
+				{
+					"name": "own-step",
+					"container": {
+						"image": "ghcr.io/k-wa-wa/etl:latest",
+						"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+					},
+				},
+				{
+					"name": "third-party-step",
+					"container": {
+						"image": "curlimages/curl:latest",
+						"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+					},
+				},
+			],
+		},
+	}
+	denies_wf := main.deny with input as [wf] with data.env as "common"
+	warns_wf := main.warn with input as [wf] with data.env as "common"
+	count(denies_wf) == 1
+	count(warns_wf) == 1
+	some dw in denies_wf
+	contains(dw, "own-step")
+	some ww in warns_wf
+	contains(ww, "third-party-step")
+
+	job := {
+		"apiVersion": "batch/v1",
+		"kind": "Job",
+		"metadata": {"name": "mixed-job", "namespace": "app-ns"},
+		"spec": {
+			"template": {
+				"spec": {
+					"restartPolicy": "Never",
+					"initContainers": [{
+						"name": "load",
+						"image": "ghcr.io/k-wa-wa/pechka/etl-load:latest",
+						"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+					}],
+					"containers": [{
+						"name": "setup",
+						"image": "curlimages/curl:latest",
+						"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+					}],
+				},
+			},
+		},
+	}
+	denies_job := main.deny with input as [job] with data.env as "common"
+	warns_job := main.warn with input as [job] with data.env as "common"
+	count(denies_job) == 1
+	count(warns_job) == 1
+	some dj in denies_job
+	contains(dj, "init:load")
+	some wj in warns_job
+	contains(wj, "setup")
+}
