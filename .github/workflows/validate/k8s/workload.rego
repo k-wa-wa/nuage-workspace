@@ -165,9 +165,17 @@ deny contains msg if {
 	])
 }
 
+keel_regex_target(doc) if {
+	keel_target_deployment(doc)
+}
+
+keel_regex_target(doc) if {
+	keel_monitored_workload(doc)
+}
+
 deny contains msg if {
 	some doc in docs
-	keel_target_deployment(doc)
+	keel_regex_target(doc)
 	annotations := object.get(object.get(doc, "metadata", {}), "annotations", {})
 	monitored_raw := object.get(annotations, "keel.sh/monitorContainers", "")
 	pattern := trim_space(monitored_raw)

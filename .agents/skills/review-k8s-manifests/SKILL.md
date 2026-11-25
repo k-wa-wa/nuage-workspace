@@ -22,6 +22,7 @@ Nuage 配下の各リポジトリで Kubernetes マニフェスト（Deployment,
      - 最新追従を意図する場合: `imagePullPolicy: Always` を明示する。
      - 再現性やキャッシュを優先する場合: パッチバージョンを含む固定タグ（例: `16.8-alpine`）または不変ダイジェスト（`@sha256:...`）へ固定し、`imagePullPolicy: IfNotPresent` を明示する。
    - Docker Hub レート制限や遅延回避等の明確な理由で `:latest` + `imagePullPolicy: IfNotPresent` を意図的に採用する場合は、理由をマニフェスト内コメント（および設計ドキュメント）に明記し、`nuage.io/ignore-image-pull-policy: "true"` アノテーションで明示的にオプトアウトする。
+   - **注意（リソース単位の適用範囲）**: `nuage.io/ignore-image-pull-policy: "true"` はコンテナ単位ではなくリソース（ワークロード）単位で効くため、自前イメージや Keel 監視対象コンテナと同居するワークロードには絶対に付与しない。混在ワークロード内のサードパーティ製サイドカー等で `:latest` 警告を解消したい場合は、オプトアウトではなく固定タグ（または `@sha256:...` digest）への固定、または `imagePullPolicy: Always` の明示で対処する。
 
 ## 2. Keel アノテーションの整合性
 

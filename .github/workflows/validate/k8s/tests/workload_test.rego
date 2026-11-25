@@ -674,3 +674,214 @@ test_workflow_template_and_job_own_vs_third_party_latest if {
 	some wj in warns_job
 	contains(wj, "setup")
 }
+
+# 例外系: keel.sh/policy: "never" が設定されたワークロードは trigger: poll 併記でも Keel 監視対象から除外される
+test_keel_policy_never_excluded if {
+	dep := {
+		"apiVersion": "apps/v1",
+		"kind": "Deployment",
+		"metadata": {
+			"name": "keel-never",
+			"namespace": "app-ns",
+			"annotations": {
+				"keel.sh/policy": "never",
+				"keel.sh/trigger": "poll",
+			},
+		},
+		"spec": {
+			"replicas": 1,
+			"template": {
+				"metadata": {"labels": {"app": "keel-never"}},
+				"spec": {
+					"containers": [{
+						"name": "web",
+						"image": "nginx:1.27.0",
+						"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						"readinessProbe": {"httpGet": {"path": "/", "port": 80}},
+						"livenessProbe": {"httpGet": {"path": "/", "port": 80}},
+					}],
+				},
+			},
+		},
+	}
+	denies := main.deny with input as [dep] with data.env as "common"
+	warns := main.warn with input as [dep] with data.env as "common"
+	count(denies) == 0
+	count(warns) == 0
+
+	dep_latest := json.patch(dep, [{
+		"op": "replace",
+		"path": "/spec/template/spec/containers/0/image",
+		"value": "nginx:latest",
+	}])
+	denies_latest := main.deny with input as [dep_latest] with data.env as "common"
+	warns_latest := main.warn with input as [dep_latest] with data.env as "common"
+	count(denies_latest) == 0
+	count(warns_latest) == 1
+}
+
+# 例外系: Helm 管理サードパーティワークロードは Keel / :latest 双方のチェックから除外される
+test_helm_excluded_skips_keel_and_latest_checks if {
+	helm_dep := {
+		"apiVersion": "apps/v1",
+		"kind": "Deployment",
+		"metadata": {
+			"name": "helm-keel-third-party",
+			"namespace": "monitoring",
+			"labels": {"helm.sh/chart": "sample-1.0.0"},
+			"annotations": {
+				"keel.sh/policy": "force",
+				"keel.sh/trigger": "poll",
+			},
+		},
+		"spec": {
+			"replicas": 1,
+			"template": {
+				"metadata": {"labels": {"app": "helm-keel-third-party"}},
+				"spec": {
+					"containers": [{
+						"name": "sidecar",
+						"image": "busybox:latest",
+					}],
+				},
+			},
+		},
+	}
+	denies := main.deny with input as [helm_dep] with data.env as "common"
+	warns := main.warn with input as [helm_dep] with data.env as "common"
+	count(denies) == 0
+	count(warns) == 0
+}
+
+# 異常系・正常系: CronJob (jobTemplate) の Keel 監視対象コンテナで imagePullPolicy: Always が必須となる
+test_cronjob_keel_monitored_requires_pull_policy_always if {
+	cj := {
+		"apiVersion": "batch/v1",
+		"kind": "CronJob",
+		"metadata": {
+			"name": "keel-cron",
+			"namespace": "app-ns",
+			"annotations": {
+				"keel.sh/policy": "force",
+				"keel.sh/trigger": "poll",
+				"keel.sh/matchTag": "true",
+				"keel.sh/monitorContainers": "runner",
+			},
+		},
+		"spec": {
+			"schedule": "0 * * * *",
+			"jobTemplate": {
+				"spec": {
+					"template": {
+						"spec": {
+							"restartPolicy": "OnFailure",
+							"containers": [{
+								"name": "runner",
+								"image": "alpine:3.21",
+								"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+							}],
+						},
+					},
+				},
+			},
+		},
+	}
+	denies := main.deny with input as [cj] with data.env as "common"
+	count(denies) == 1
+	some m in denies
+	contains(m, "Keel 監視対象")
+	contains(m, "runner")
+
+	cj_always := json.patch(cj, [{
+		"op": "add",
+		"path": "/spec/jobTemplate/spec/template/spec/containers/0/imagePullPolicy",
+		"value": "Always",
+	}])
+	denies_ok := main.deny with input as [cj_always] with data.env as "common"
+	count(denies_ok) == 0
+}
+
+# 異常系: 非自前イメージのみの Keel ワークロードや CronJob でも monitorContainers の不正正規表現は deny される
+test_keel_invalid_monitor_containers_regex_denied_for_non_own_workloads if {
+	dep := {
+		"apiVersion": "apps/v1",
+		"kind": "Deployment",
+		"metadata": {
+			"name": "third-party-bad-regex",
+			"namespace": "app-ns",
+			"annotations": {
+				"keel.sh/policy": "force",
+				"keel.sh/trigger": "poll",
+				"keel.sh/monitorContainers": "[unclosed",
+			},
+		},
+		"spec": {
+			"replicas": 1,
+			"template": {
+				"metadata": {"labels": {"app": "third-party-bad-regex"}},
+				"spec": {
+					"containers": [{
+						"name": "web",
+						"image": "nginx:1.27.0",
+						"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+						"readinessProbe": {"httpGet": {"path": "/", "port": 80}},
+						"livenessProbe": {"httpGet": {"path": "/", "port": 80}},
+					}],
+				},
+			},
+		},
+	}
+	denies_dep := main.deny with input as [dep] with data.env as "common"
+	count(denies_dep) == 1
+	some md in denies_dep
+	contains(md, "有効な正規表現ではない")
+
+	cj := {
+		"apiVersion": "batch/v1",
+		"kind": "CronJob",
+		"metadata": {
+			"name": "cron-bad-regex",
+			"namespace": "app-ns",
+			"annotations": {
+				"keel.sh/trigger": "poll",
+				"keel.sh/monitorContainers": "[unclosed",
+			},
+		},
+		"spec": {
+			"schedule": "0 * * * *",
+			"jobTemplate": {
+				"spec": {
+					"template": {
+						"spec": {
+							"restartPolicy": "OnFailure",
+							"containers": [{
+								"name": "runner",
+								"image": "alpine:3.21",
+								"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+							}],
+						},
+					},
+				},
+			},
+		},
+	}
+	denies_cj := main.deny with input as [cj] with data.env as "common"
+	count(denies_cj) == 1
+	some mc in denies_cj
+	contains(mc, "有効な正規表現ではない")
+}
+
+# 境界系: 自前イメージかつ Keel 監視対象のコンテナで imagePullPolicy 欠落時は deny が 1 件のみになり warn も重複しない
+test_own_image_and_keel_monitored_single_deny_no_duplicate if {
+	bad := json.patch(valid_own_deployment, [{
+		"op": "remove",
+		"path": "/spec/template/spec/containers/0/imagePullPolicy",
+	}])
+	denies := main.deny with input as [bad, valid_pdb] with data.env as "prod"
+	warns := main.warn with input as [bad, valid_pdb] with data.env as "prod"
+	count(denies) == 1
+	count(warns) == 0
+	some m in denies
+	contains(m, "自前イメージ")
+	not contains(m, "Keel 監視対象")
+}
