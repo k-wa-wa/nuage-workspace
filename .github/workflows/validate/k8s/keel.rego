@@ -16,10 +16,13 @@ import rego.v1
 #    Always として動作する。しかし Argo CD ApplicationSet の kustomize.images や overlay で
 #    タグを :pr-<N> や :v1.2.3 等へ差し替えた瞬間、非 :latest タグの既定値（IfNotPresent）へ
 #    切り替わり、プレビュー環境で古いイメージが残留する。したがって YAML 上への Always 明示が必須である。
-# 3. :latest / タグ省略チェックを deny ではなく warn とした理由:
+# 3. :latest / タグ省略チェックを deny ではなく warn とした理由と floating タグの扱い:
 #    サードパーティ製イメージの :latest やタグ省略は、既存リポジトリの CI（fail-on-policy: true）を
 #    直ちに破壊せず段階的に未設定箇所を可視化するため warn とする（@sha256: digest 固定は対象外）。
 #    一方、事故影響が大きい自前イメージおよび Keel 監視対象コンテナは deny で確実にブロックする。
+#    なお postgres:16 や alpine:3.22 等のメジャー/マイナー指定 floating タグは、追従意図なら
+#    imagePullPolicy: Always、安定性優先ならパッチ固定タグや @sha256: digest 固定が望ましいが、
+#    イメージのタグ命名規則が多様で誤検知ノイズになりやすいため機械判定の対象外としている。
 # 4. keel.sh/monitorContainers の RE2 正規表現仕様:
 #    Keel の monitorContainers はカンマ区切りではなく Go（RE2）正規表現で評価されるため、
 #    複数指定は "app,sidecar" ではなく "^(app|sidecar)$" のように記述する必要がある。
@@ -136,7 +139,7 @@ warn contains msg if {
 	is_latest_or_untagged(img)
 	pull_policy := object.get(entry.container, "imagePullPolicy", "")
 	pull_policy != "Always"
-	msg := sprintf("%s: コンテナ %q は :latest またはタグ省略イメージ (%s) を使用しているため imagePullPolicy: Always の明示、または固定タグ + nuage.io/ignore-image-pull-policy の検討を推奨する (現在: %q)", [
+	msg := sprintf("%s: コンテナ %q は :latest またはタグ省略イメージ (%s) を使用しているため imagePullPolicy: Always の明示、または固定タグ（@sha256: digest 含む）への固定を推奨する (現在: %q)", [
 		resource_id(doc),
 		entry.name,
 		img,
