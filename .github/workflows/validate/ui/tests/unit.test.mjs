@@ -78,7 +78,7 @@ after(() => {
   }
 });
 
-describe("nuage-ui/no-raw-color", () => {
+describe("raw color prohibition", () => {
   it("allows raw colors inside entry CSS :root and @theme, and rejects outside", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(`
@@ -92,6 +92,7 @@ describe("nuage-ui/no-raw-color", () => {
       "styles/other.css": `
 :root {
   --local-bad: #123456;
+  --local-rgb: rgba(255, 0, 0, 0.5);
 }
 .svg-bg {
   fill: url(#my-gradient);
@@ -100,12 +101,12 @@ describe("nuage-ui/no-raw-color", () => {
     });
 
     const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
-    assert.equal(res.violations.length, 2);
     assert.deepEqual(
       res.violations.map((v) => [v.file, v.rule]),
       [
-        ["app/globals.css", "nuage-ui/no-raw-color"],
-        ["styles/other.css", "nuage-ui/no-raw-color"],
+        ["app/globals.css", "color-no-hex"],
+        ["styles/other.css", "color-no-hex"],
+        ["styles/other.css", "declaration-property-value-disallowed-list"],
       ],
     );
   });
@@ -145,7 +146,6 @@ export function Sample({ url, tag }: { url: string; tag: string }) {
 
     const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
     const lines = res.violations.map((v) => v.line);
-    // 6: #191816, 7: #60a5fa & rgb(...), 12: 5 Tailwind values, 13: hsl & hsla, 22: #60a5fa in <style>
     assert.ok(lines.includes(6));
     assert.ok(lines.includes(7));
     assert.ok(lines.includes(12));
@@ -156,12 +156,14 @@ export function Sample({ url, tag }: { url: string; tag: string }) {
     assert.ok(!lines.includes(15), "JSX text #123 should not be flagged");
   });
 
-  it("supports nuage-ui-ignore-color on same line and preceding line", async () => {
+  it("supports nuage-ui-ignore-color and stylelint-disable-next-line opt-out", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(`
 .ignored-inline { color: #fff; /* nuage-ui-ignore-color */ }
 /* nuage-ui-ignore-color */
 .ignored-prev { color: rgba(0, 0, 0, 0.5); }
+/* stylelint-disable-next-line color-no-hex */
+.ignored-stylelint { color: #abc; }
 `),
       "app/manifest.ts": `
 export const manifest = {
@@ -190,7 +192,7 @@ export function Box() {
   });
 });
 
-describe("nuage-ui/hover-media-query", () => {
+describe("defensive-css/no-accidental-hover", () => {
   it("requires :hover in CSS and <style> to be wrapped inside @media (hover: hover)", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(`
@@ -230,10 +232,10 @@ export function Card() {
     assert.equal(res.violations[1].file, "app/globals.css");
     assert.equal(res.violations[2].file, "components/Card.tsx");
     assert.equal(res.violations[2].line, 9);
-    assert.equal(res.violations[2].rule, "nuage-ui/hover-media-query");
+    assert.equal(res.violations[2].rule, "defensive-css/no-accidental-hover");
   });
 
-  it("supports nuage-ui-ignore-hover opt-out", async () => {
+  it("supports nuage-ui-ignore-hover and stylelint-disable-next-line opt-out", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(`
 /* nuage-ui-ignore-hover */
@@ -241,6 +243,8 @@ export function Card() {
 .ignored-same:hover { /* nuage-ui-ignore-hover */
   opacity: 0.8;
 }
+/* stylelint-disable-next-line defensive-css/no-accidental-hover */
+.ignored-stylelint:hover { opacity: 0.8; }
 `),
       "components/Button.tsx": `
 export function Button() {
@@ -316,19 +320,22 @@ describe("exclude handling", () => {
       ".storybook/preview.tsx": `export const x = "#fff";`,
       "vite.config.ts": `export const x = "#fff";`,
       "legacy/old.tsx": `export const x = "#fff";`,
+      "generated/foo.gen.tsx": `export const x = "#fff";`,
     });
 
     const resWithDefaultOnly = await runUiLint({
       targetDir: dir,
       entryCss: "app/globals.css",
     });
-    assert.equal(resWithDefaultOnly.violations.length, 1);
-    assert.equal(resWithDefaultOnly.violations[0].file, "legacy/old.tsx");
+    assert.deepEqual(
+      resWithDefaultOnly.violations.map((v) => v.file),
+      ["generated/foo.gen.tsx", "legacy/old.tsx"],
+    );
 
     const resWithExclude = await runUiLint({
       targetDir: dir,
       entryCss: "app/globals.css",
-      excludes: ["legacy"],
+      excludes: ["legacy", "*.gen.tsx"],
     });
     assert.equal(resWithExclude.violations.length, 0);
   });
@@ -383,11 +390,10 @@ export function Dynamic({ on }: { on: boolean }) {
     });
 
     const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
-    assert.equal(res.violations.length, 4);
     assert.deepEqual(
       res.violations.map((v) => [v.file, v.line, v.rule]),
       [
-        ["app/globals.css", 56, "nuage-ui/no-raw-color"],
+        ["app/globals.css", 56, "declaration-property-value-disallowed-list"],
         ["components/Dynamic.tsx", 9, "nuage-ui/no-raw-color"],
         ["components/Dynamic.tsx", 11, "nuage-ui/no-raw-color"],
         ["components/Dynamic.tsx", 11, "nuage-ui/no-raw-color"],
@@ -414,7 +420,6 @@ export function MultiHover() {
     });
 
     const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
-    assert.equal(res.violations.length, 2);
     assert.deepEqual(
       res.violations.map((v) => v.line),
       [7, 8],

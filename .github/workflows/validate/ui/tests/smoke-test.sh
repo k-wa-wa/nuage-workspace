@@ -122,7 +122,7 @@ if (cd "$FAIL_DIR" && env -u GITHUB_STEP_SUMMARY "$RUNNER" --entry-css src/index
   exit 1
 fi
 grep -q "nuage-ui/no-raw-color" "$FAIL_OUT"
-grep -q "nuage-ui/hover-media-query" "$FAIL_OUT"
+grep -q "defensive-css/no-accidental-hover" "$FAIL_OUT"
 
 echo "=== Smoke Test 3: Policy violation warning PASS (fail-on-policy=false) ==="
 SUMMARY_WARN="${TMP_ROOT}/summary-warn.md"

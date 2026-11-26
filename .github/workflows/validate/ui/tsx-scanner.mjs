@@ -11,196 +11,126 @@
  */
 
 import ts from "typescript";
-import {
-  IGNORE_COLOR_TOKEN,
-  findRawColors,
-  hasIgnoreComment,
-} from "./rules.mjs";
+
+export const IGNORE_COLOR_TOKEN = "nuage-ui-ignore-color";
+export const IGNORE_HOVER_TOKEN = "nuage-ui-ignore-hover";
+
+const RAW_COLOR_REGEX =
+  /(?<![A-Za-z0-9_/.-])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![A-Za-z0-9_-])|\b(?:rgba?|hsla?)\s*\((?:[^()]|\([^)]*\))*\)/gi;
+
+/**
+ * 指定行（1-based）または直前行にオプトアウトコメントが含まれるかを判定する。
+ *
+ * @param {string[]} lines
+ * @param {number} lineNumber 1-based line number
+ * @param {string} token
+ * @returns {boolean}
+ */
+export function hasIgnoreComment(lines, lineNumber, token) {
+  if (!Array.isArray(lines) || lineNumber < 1) return false;
+  return (
+    (lines[lineNumber - 1] ?? "").includes(token) ||
+    (lineNumber >= 2 && (lines[lineNumber - 2] ?? "").includes(token))
+  );
+}
 
 function getScriptKind(filePath) {
   const lower = filePath.toLowerCase();
   if (lower.endsWith(".tsx")) return ts.ScriptKind.TSX;
   if (lower.endsWith(".jsx")) return ts.ScriptKind.JSX;
-  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
-    return ts.ScriptKind.JS;
-  }
+  if (/\.[cm]?js$/.test(lower)) return ts.ScriptKind.JS;
   return ts.ScriptKind.TS;
-}
-
-function getTagNameText(tagName) {
-  if (ts.isIdentifier(tagName)) {
-    return tagName.text;
-  }
-  return "";
-}
-
-function extractTemplateExpressionCss(expr, sourceFile, sourceText) {
-  const head = expr.head;
-  const startPos = head.getStart(sourceFile) + 1;
-  const lc = sourceFile.getLineAndCharacterOfPosition(startPos);
-
-  let css = head.text;
-  let prevEnd = head.getEnd();
-
-  for (const span of expr.templateSpans) {
-    const litStart = span.literal.getStart(sourceFile);
-    const exprSlice = sourceText.slice(prevEnd, litStart);
-    const newlineCount = (exprSlice.match(/\n/g) || []).length;
-    css += `var(--nuage-expr)${"\n".repeat(newlineCount)}${span.literal.text}`;
-    prevEnd = span.literal.getEnd();
-  }
-
-  return {
-    css,
-    startLine: lc.line + 1,
-  };
 }
 
 function extractStyleElementBlocks(jsxElement, sourceFile, sourceText) {
   const blocks = [];
-  const elementStartLine =
-    sourceFile.getLineAndCharacterOfPosition(jsxElement.getStart(sourceFile)).line + 1;
-
   for (const child of jsxElement.children) {
     if (ts.isJsxText(child)) {
       const text = child.getText(sourceFile);
-      if (text.trim().length > 0) {
-        const lc = sourceFile.getLineAndCharacterOfPosition(child.getStart(sourceFile));
-        blocks.push({
-          css: text,
-          startLine: lc.line + 1,
-          elementStartLine,
-        });
+      if (text.trim()) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(child.getStart(sourceFile));
+        blocks.push({ css: text, startLine: line + 1 });
       }
       continue;
     }
+    if (!ts.isJsxExpression(child) || !child.expression) continue;
 
-    if (ts.isJsxExpression(child) && child.expression) {
-      const expr = child.expression;
-      if (ts.isNoSubstitutionTemplateLiteral(expr) || ts.isStringLiteral(expr)) {
-        const startPos = expr.getStart(sourceFile) + 1;
-        const lc = sourceFile.getLineAndCharacterOfPosition(startPos);
-        blocks.push({
-          css: expr.text,
-          startLine: lc.line + 1,
-          elementStartLine,
-        });
-      } else if (ts.isTemplateExpression(expr)) {
-        const extracted = extractTemplateExpressionCss(expr, sourceFile, sourceText);
-        blocks.push({
-          ...extracted,
-          elementStartLine,
-        });
+    const expr = child.expression;
+    if (ts.isNoSubstitutionTemplateLiteral(expr) || ts.isStringLiteral(expr)) {
+      const { line } = sourceFile.getLineAndCharacterOfPosition(expr.getStart(sourceFile) + 1);
+      blocks.push({ css: expr.text, startLine: line + 1 });
+    } else if (ts.isTemplateExpression(expr)) {
+      const { line } = sourceFile.getLineAndCharacterOfPosition(expr.head.getStart(sourceFile) + 1);
+      let css = expr.head.text;
+      let prevEnd = expr.head.getEnd();
+      for (const span of expr.templateSpans) {
+        const litStart = span.literal.getStart(sourceFile);
+        const newlines = (sourceText.slice(prevEnd, litStart).match(/\n/g) || []).length;
+        css += `var(--nuage-expr)${"\n".repeat(newlines)}${span.literal.text}`;
+        prevEnd = span.literal.getEnd();
       }
+      blocks.push({ css, startLine: line + 1 });
     }
   }
-
   return blocks;
 }
 
-function isModuleSpecifierNode(node) {
-  const parent = node.parent;
-  if (!parent) return false;
-  if (ts.isImportDeclaration(parent) && parent.moduleSpecifier === node) {
-    return true;
-  }
-  if (ts.isExportDeclaration(parent) && parent.moduleSpecifier === node) {
-    return true;
-  }
-  if (ts.isExternalModuleReference(parent) && parent.expression === node) {
-    return true;
-  }
-  return false;
+function isStringLikeLiteral(node) {
+  return (
+    ts.isStringLiteral(node) ||
+    ts.isNoSubstitutionTemplateLiteral(node) ||
+    ts.isTemplateHead(node) ||
+    ts.isTemplateMiddle(node) ||
+    ts.isTemplateTail(node)
+  );
 }
 
-function getLiteralContentSlice(node, sourceFile, sourceText) {
-  const start = node.getStart(sourceFile);
-  const end = node.getEnd();
-
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-    return {
-      contentStart: start + 1,
-      text: sourceText.slice(start + 1, Math.max(start + 1, end - 1)),
-    };
-  }
-  if (ts.isTemplateHead(node) || ts.isTemplateMiddle(node)) {
-    return {
-      contentStart: start + 1,
-      text: sourceText.slice(start + 1, Math.max(start + 1, end - 2)),
-    };
-  }
-  if (ts.isTemplateTail(node)) {
-    return {
-      contentStart: start + 1,
-      text: sourceText.slice(start + 1, Math.max(start + 1, end - 1)),
-    };
-  }
-  return null;
+function isModuleSpecifier(node) {
+  const p = node.parent;
+  return Boolean(
+    p &&
+      (((ts.isImportDeclaration(p) || ts.isExportDeclaration(p)) && p.moduleSpecifier === node) ||
+        (ts.isExternalModuleReference(p) && p.expression === node)),
+  );
 }
 
-function isInsideStyleAttribute(node) {
-  let current = node.parent;
-  while (current) {
-    if (ts.isJsxAttribute(current)) {
-      return ts.isIdentifier(current.name) && current.name.text === "style";
+function findEnclosingAttrInfo(node) {
+  let jsxAttrName = null;
+  let propName = null;
+  for (let cur = node.parent; cur; cur = cur.parent) {
+    if (!propName && ts.isPropertyAssignment(cur) && ts.isIdentifier(cur.name)) {
+      propName = cur.name.text;
     }
-    if (ts.isJsxOpeningElement(current) || ts.isJsxSelfClosingElement(current)) {
-      return false;
+    if (ts.isJsxAttribute(cur) && ts.isIdentifier(cur.name)) {
+      jsxAttrName = cur.name.text;
+      break;
     }
-    current = current.parent;
+    if (ts.isJsxOpeningElement(cur) || ts.isJsxSelfClosingElement(cur)) break;
   }
-  return false;
+  return { jsxAttrName, propName };
 }
 
-function isAnchorAttribute(node) {
-  let current = node.parent;
-  while (current) {
-    if (ts.isJsxAttribute(current) && ts.isIdentifier(current.name)) {
-      const name = current.name.text;
-      if (name === "href" || name === "xlinkHref") {
-        return true;
-      }
-      return false;
-    }
-    if (ts.isPropertyAssignment(current) && ts.isIdentifier(current.name)) {
-      if (current.name.text === "href") {
-        return true;
-      }
-    }
-    if (ts.isJsxOpeningElement(current) || ts.isJsxSelfClosingElement(current)) {
-      return false;
-    }
-    current = current.parent;
-  }
-  return false;
-}
-
-function shouldReportHexInScript(node, sliceText, match) {
-  if (isInsideStyleAttribute(node)) {
-    return true;
-  }
-  if (isAnchorAttribute(node)) {
-    return false;
+function shouldReportColorMatch(node, sliceText, value, index) {
+  if (!value.startsWith("#")) {
+    const open = value.indexOf("(");
+    const close = value.lastIndexOf(")");
+    const inner = open >= 0 && close > open ? value.slice(open + 1, close).trim().toLowerCase() : "";
+    return !inner.startsWith("var(");
   }
 
-  const before = sliceText.slice(0, match.index);
+  const { jsxAttrName, propName } = findEnclosingAttrInfo(node);
+  if (jsxAttrName === "style") return true;
+  if (jsxAttrName === "href" || jsxAttrName === "xlinkHref" || propName === "href") return false;
+
+  const before = sliceText.slice(0, index);
   // Tailwind 任意値（bg-[#123] 等）や CSS プロパティ文字列（"color: #123" 等）は常に検査する
-  if (before.endsWith("[") || /:\s*$/.test(before)) {
-    return true;
+  if (before.endsWith("[") || /:\s*$/.test(before)) return true;
+
+  const hexBody = value.slice(1);
+  if (sliceText.trim() === value) {
+    // 3〜4 桁の英字のみの単語（#add, #cafe, #feed 等）はアンカー識別子と区別するため除外（#fff/#aaa 等は検出）
+    return !(/^[a-fA-F]{3,4}$/.test(hexBody) && !/^(.)\1+$/i.test(hexBody));
   }
-
-  const hexBody = match.value.slice(1);
-  const isStandalone = sliceText.trim() === match.value;
-
-  if (isStandalone) {
-    // 3〜4 桁の英字のみの単語（#add, #cafe, #feed 等）はアンカー識別子と区別するため除外する
-    // ただし #fff / #aaa 等の同文字反復はグレースケール色として検出する
-    if (/^[a-fA-F]{3,4}$/.test(hexBody) && !/^(.)\1+$/i.test(hexBody)) {
-      return false;
-    }
-    return true;
-  }
-
   // 非スタイル文字列中に埋め込まれた 3〜4 桁の hex（例: "Issue #123"）は誤検知を防ぐため除外する
   return hexBody.length >= 6;
 }
@@ -211,11 +141,6 @@ function shouldReportHexInScript(node, sliceText, match) {
  *
  * @param {string} filePath
  * @param {string} sourceText
- * @returns {{
- *   lines: string[],
- *   styleBlocks: Array<{ css: string, startLine: number, elementStartLine: number }>,
- *   colorViolations: Array<{ line: number, column: number, value: string, message: string }>
- * }}
  */
 export function analyzeScriptFile(filePath, sourceText) {
   const sourceFile = ts.createSourceFile(
@@ -230,56 +155,41 @@ export function analyzeScriptFile(filePath, sourceText) {
   const colorViolations = [];
 
   function visit(node) {
-    if (ts.isJsxElement(node)) {
-      const tagName = getTagNameText(node.openingElement.tagName);
-      if (tagName === "style") {
-        styleBlocks.push(...extractStyleElementBlocks(node, sourceFile, sourceText));
-        // <style> 内の静的 CSS は Stylelint で検査し、${...} 内の JS 式のみ走査を継続する
-        for (const child of node.children) {
-          if (ts.isJsxExpression(child) && child.expression) {
-            if (ts.isTemplateExpression(child.expression)) {
-              for (const span of child.expression.templateSpans) {
-                visit(span.expression);
-              }
-            } else if (
-              !ts.isNoSubstitutionTemplateLiteral(child.expression) &&
-              !ts.isStringLiteral(child.expression)
-            ) {
-              visit(child.expression);
-            }
-          }
+    if (
+      ts.isJsxElement(node) &&
+      ts.isIdentifier(node.openingElement.tagName) &&
+      node.openingElement.tagName.text === "style"
+    ) {
+      styleBlocks.push(...extractStyleElementBlocks(node, sourceFile, sourceText));
+      for (const child of node.children) {
+        if (!ts.isJsxExpression(child) || !child.expression) continue;
+        if (ts.isTemplateExpression(child.expression)) {
+          for (const span of child.expression.templateSpans) visit(span.expression);
+        } else if (!ts.isNoSubstitutionTemplateLiteral(child.expression) && !ts.isStringLiteral(child.expression)) {
+          visit(child.expression);
         }
-        return;
       }
+      return;
     }
 
-    if (
-      ts.isStringLiteral(node) ||
-      ts.isNoSubstitutionTemplateLiteral(node) ||
-      ts.isTemplateHead(node) ||
-      ts.isTemplateMiddle(node) ||
-      ts.isTemplateTail(node)
-    ) {
-      if (!isModuleSpecifierNode(node)) {
-        const slice = getLiteralContentSlice(node, sourceFile, sourceText);
-        if (slice && slice.text.length > 0) {
-          const matches = findRawColors(slice.text);
-          for (const m of matches) {
-            if (m.value.startsWith("#") && !shouldReportHexInScript(node, slice.text, m)) {
-              continue;
-            }
-            const absPos = slice.contentStart + m.index;
-            const lc = sourceFile.getLineAndCharacterOfPosition(absPos);
-            const line = lc.line + 1;
-            const column = lc.character + 1;
-            if (!hasIgnoreComment(lines, line, IGNORE_COLOR_TOKEN)) {
-              colorViolations.push({
-                line,
-                column,
-                value: m.value,
-                message: `生カラー '${m.value}' の直書きは禁止である（セマンティック CSS 変数を使うこと。例外は ${IGNORE_COLOR_TOKEN} で明示する）。`,
-              });
-            }
+    if (isStringLikeLiteral(node) && !isModuleSpecifier(node)) {
+      const start = node.getStart(sourceFile) + 1;
+      const tailTrim = ts.isTemplateHead(node) || ts.isTemplateMiddle(node) ? 2 : 1;
+      const sliceText = sourceText.slice(start, Math.max(start, node.getEnd() - tailTrim));
+      if (sliceText) {
+        RAW_COLOR_REGEX.lastIndex = 0;
+        let m;
+        while ((m = RAW_COLOR_REGEX.exec(sliceText)) !== null) {
+          if (!shouldReportColorMatch(node, sliceText, m[0], m.index)) continue;
+          const lc = sourceFile.getLineAndCharacterOfPosition(start + m.index);
+          const line = lc.line + 1;
+          if (!hasIgnoreComment(lines, line, IGNORE_COLOR_TOKEN)) {
+            colorViolations.push({
+              line,
+              column: lc.character + 1,
+              rule: "nuage-ui/no-raw-color",
+              message: `生カラー '${m[0]}' の直書きは禁止である（セマンティック CSS 変数を使うこと。例外は ${IGNORE_COLOR_TOKEN} で明示する）。`,
+            });
           }
         }
       }
@@ -289,10 +199,5 @@ export function analyzeScriptFile(filePath, sourceText) {
   }
 
   visit(sourceFile);
-
-  return {
-    lines,
-    styleBlocks,
-    colorViolations,
-  };
+  return { lines, styleBlocks, colorViolations };
 }

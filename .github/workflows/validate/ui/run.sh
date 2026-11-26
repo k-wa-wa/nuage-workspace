@@ -4,14 +4,15 @@ set -euo pipefail
 # Nuage UI 設計標準の共通検証ランナー
 #
 # 【なぜこのルールが必要か】
-# 1. 生カラー直書き禁止（nuage-ui/no-raw-color）:
+# 1. 生カラー直書き禁止（color-no-hex / declaration-property-value-disallowed-list / nuage-ui/no-raw-color）:
 #    Nuage UI はダークテーマ専用であり、色・透過率をエントリ CSS のセマンティックトークンへ
 #    一元化する。コンポーネント等への #hex / rgb() / rgba() / hsl() / hsla() 直書きを防ぐ。
 #    正当な例外（PWA themeColor・manifest.ts・3D ライブラリ属性等）は行末または直前行コメント
-#    「nuage-ui-ignore-color」でオプトアウトする。
-# 2. :hover の @media (hover: hover) ラップ必須（nuage-ui/hover-media-query）:
+#    「nuage-ui-ignore-color」（または stylelint-disable-next-line）でオプトアウトする。
+# 2. :hover の @media (hover: hover) ラップ必須（defensive-css/no-accidental-hover）:
 #    タッチデバイスでタップ後に :hover が残留する問題を防ぐため、:hover セレクタは必ず
-#    @media (hover: hover) 内に配置する。例外は「nuage-ui-ignore-hover」でオプトアウトする。
+#    @media (hover: hover) 内に配置する。例外は「nuage-ui-ignore-hover」（または
+#    stylelint-disable-next-line defensive-css/no-accidental-hover）でオプトアウトする。
 # 3. エントリ CSS の必須トークン・モバイル/アクセシビリティガードレール（nuage-ui/entry-css-guardrails）:
 #    必須 21 変数、-webkit-tap-highlight-color: transparent、:focus:not(:focus-visible) 抑止 +
 #    :focus-visible 定義、user-select: none + touch-action: manipulation、およびモバイル幅での
@@ -124,7 +125,9 @@ check_required_commands() {
 }
 
 ensure_dependencies() {
-  if [ -d "${SCRIPT_DIR}/node_modules/stylelint" ] && [ -d "${SCRIPT_DIR}/node_modules/typescript" ]; then
+  if [ -d "${SCRIPT_DIR}/node_modules/stylelint" ] && \
+     [ -d "${SCRIPT_DIR}/node_modules/stylelint-plugin-defensive-css" ] && \
+     [ -d "${SCRIPT_DIR}/node_modules/typescript" ]; then
     return 0
   fi
 

@@ -87,7 +87,7 @@ Nuage の UI は**ダークテーマ専用**とし、ライトモードは原則
 
 機械検査できる制約（生カラー直書き禁止、`@media (hover: hover)` 必須、エントリ CSS の必須トークン・`-webkit-tap-highlight-color: transparent`・`:focus:not(:focus-visible)` / `:focus-visible`・`user-select: none` / `touch-action: manipulation`・モバイル幅の `font-size >= 16px`）は、共通 Reusable Workflow の [ui-validate.yml](../.github/workflows/ui-validate.yml)（実装: [.github/workflows/validate/ui/](../.github/workflows/validate/ui/)）で自動検証する。
 
-各ルールの技術的根拠および例外時のオプトアウト方法（`nuage-ui-ignore-color`, `nuage-ui-ignore-hover`）は、lint 側の定義コメント（[rules.mjs](../.github/workflows/validate/ui/rules.mjs) および [stylelint-plugin.mjs](../.github/workflows/validate/ui/stylelint-plugin.mjs)）を参照すること。
+各ルールの技術的根拠および例外時のオプトアウト方法（`nuage-ui-ignore-color`, `nuage-ui-ignore-hover` または `stylelint-disable-next-line`）は、lint 側の設定・定義コメント（[stylelint.config.mjs](../.github/workflows/validate/ui/stylelint.config.mjs) および [lint.mjs](../.github/workflows/validate/ui/lint.mjs)）を参照すること。
 
 なお、機械検査になじまない定性原則として以下を遵守すること。
 
