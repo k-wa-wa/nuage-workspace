@@ -4,19 +4,18 @@ set -euo pipefail
 # Nuage UI 設計標準の共通検証ランナー
 #
 # 【なぜこのルールが必要か】
-# 1. 生カラー直書き禁止（color-no-hex / declaration-property-value-disallowed-list / nuage-ui/no-raw-color）:
-#    Nuage UI はダークテーマ専用であり、色・透過率をエントリ CSS のセマンティックトークンへ
-#    一元化する。コンポーネント等への #hex / rgb() / rgba() / hsl() / hsla() 直書きを防ぐ。
-#    正当な例外（PWA themeColor・manifest.ts・3D ライブラリ属性等）は行末または直前行コメント
-#    「nuage-ui-ignore-color」（または stylelint-disable-next-line）でオプトアウトする。
-# 2. :hover の @media (hover: hover) ラップ必須（defensive-css/no-accidental-hover）:
-#    タッチデバイスでタップ後に :hover が残留する問題を防ぐため、:hover セレクタは必ず
-#    @media (hover: hover) 内に配置する。例外は「nuage-ui-ignore-hover」（または
-#    stylelint-disable-next-line defensive-css/no-accidental-hover）でオプトアウトする。
-# 3. エントリ CSS の必須トークン・モバイル/アクセシビリティガードレール（nuage-ui/entry-css-guardrails）:
-#    必須 21 変数、-webkit-tap-highlight-color: transparent、:focus:not(:focus-visible) 抑止 +
-#    :focus-visible 定義、user-select: none + touch-action: manipulation、およびモバイル幅での
-#    input / textarea / select の font-size >= 16px（iOS Safari 自動ズーム防止）を検証する。
+# 1. CSS の生カラー直書き禁止（color-no-hex / color-named / function-disallowed-list）:
+#    ダークテーマ専用設計の一貫性を保つため、エントリ CSS を除く CSS ファイルでの
+#    #hex / 名前付きカラー / rgb() / rgba() / hsl() / hsla() の直書きを禁止する。
+# 2. CSS の :hover ガード必須（defensive-css/no-accidental-hover）:
+#    タッチデバイスでタップ後に :hover が残留する不具合を防ぐため、:hover は
+#    @media (hover: hover) 内に限定する。
+#    CSS 内の正当な例外は /* stylelint-disable-next-line <rule> */ でオプトアウトする。
+# 3. TSX / JSX の生カラー直書き禁止（nuage-ui/no-raw-color）:
+#    style={{ ... }} インラインスタイルおよび Tailwind 任意値クラス（bg-[#...] 等）への
+#    生カラー直書きを禁止する。正当な例外は行末または直前行コメント
+#    「nuage-ui-ignore-color」でオプトアウトする。
+#    ※ <style>{...}</style> や一般 JS 文字列、エントリ CSS 基盤等は docs/ui-design.md に基づきレビューで確認する。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -32,13 +31,13 @@ usage() {
   cat << 'EOF'
 Usage: run.sh [OPTIONS] [target-dir]
 
-Nuage UI 設計標準の共通検証（生カラー禁止・:hover ガード・エントリ CSS 必須トークン/ガードレール）を実行する。
+Nuage UI 設計標準の共通検証（CSS の生カラー禁止・:hover ガード、TSX/JSX の style={{}}・Tailwind 任意値生カラー禁止）を実行する。
 既定で *.test.*, *.spec.*, *.stories.*, *.config.*, *.d.ts, e2e/, mocks/, public/, .storybook/, node_modules/, .next/, dist/ 等を除外する。
 動作要件: Node.js >= 22.5.0。各オプションは環境変数でも指定できる（CLI 引数が優先される）。
 
 Options:
   --target-dir <dir>         検証対象ディレクトリ（位置引数でも指定可 / TARGET_DIR）
-  --entry-css <path>         エントリ CSS のパス（指定時は必須トークン・ガードレールを検証 / ENTRY_CSS）
+  --entry-css <path>         エントリ CSS のパス（指定時は同ファイルの色ルールのみ除外 / ENTRY_CSS）
   --exclude <pattern>        追加除外パス/glob（カンマ・改行区切り、複数指定可 / EXCLUDE）
   --fail-on-policy <bool>    ポリシー違反時に失敗終了するか（既定: true / FAIL_ON_POLICY）
   -h, --help                 このヘルプを表示する
@@ -130,11 +129,7 @@ check_required_commands() {
 
 ensure_dependencies() {
   if [ -d "${SCRIPT_DIR}/node_modules/stylelint" ] && \
-     [ -d "${SCRIPT_DIR}/node_modules/stylelint-plugin-defensive-css" ] && \
-     [ -d "${SCRIPT_DIR}/node_modules/@csstools/media-query-list-parser" ] && \
-     [ -d "${SCRIPT_DIR}/node_modules/postcss-selector-parser" ] && \
-     [ -d "${SCRIPT_DIR}/node_modules/postcss-value-parser" ] && \
-     [ -d "${SCRIPT_DIR}/node_modules/typescript" ]; then
+     [ -d "${SCRIPT_DIR}/node_modules/stylelint-plugin-defensive-css" ]; then
     return 0
   fi
 

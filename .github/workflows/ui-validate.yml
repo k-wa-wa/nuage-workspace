@@ -8,7 +8,7 @@ on:
         type: string
         default: "."
       entry-css:
-        description: "エントリ CSS ファイルのパス（指定時は必須トークン・モバイル/アクセシビリティガードレールを検証。例: app/globals.css）"
+        description: "エントリ CSS ファイルのパス（指定時は :root トークン定義のため同ファイルのみ生カラー禁止ルールを除外。例: app/globals.css）"
         type: string
         default: ""
       exclude:

@@ -8,7 +8,7 @@
 | :-- | :-- |
 | `docker-build-push.yml` | Docker イメージのビルド、Trivy 脆弱性スキャン（合格時のみ GHCR へ push）、PR プレビューコメント投稿 |
 | `k8s-validate.yml` | Kustomize ビルド、`yamllint` / `kubeconform` / `pluto` 検証、Conftest（Rego）による k8s 標準ポリシー検査 |
-| `ui-validate.yml` | Stylelint と AST スキャナによる Nuage UI 設計標準（生カラー禁止・`:hover` ガード・エントリ CSS トークン/ガードレール）検査 |
+| `ui-validate.yml` | Stylelint と軽量チェッカによる Nuage UI 基本ルール（CSS の生カラー禁止・`:hover` ガード、TSX/JSX の `style={{}}` / Tailwind 任意値の生カラー禁止）検査 |
 | `ci.yml` | このリポジトリ内の Rego ポリシーテスト、UI lint テスト、`shellcheck`、ワークフロー YAML の lint（他リポジトリからは呼ばない） |
 
 ## 使い方
@@ -99,7 +99,12 @@ fi
 
 ### `ui-validate.yml`
 
-`target-dir` 配下の `.css` / `.tsx` / `.ts` / `.jsx` / `.js`（既定で `*.test.*`, `*.spec.*`, `*.stories.*`, `*.config.*`, `*.d.ts`, `e2e/`, `mocks/`, `public/`, `.storybook/`, `tests/`, `node_modules/`, `.next/`, `dist/` 等を除外）を対象に、生カラー直書き禁止・`:hover` の `@media (hover: hover)` ラップ必須・`entry-css` 指定時の必須トークンとモバイル/アクセシビリティガードレールを検証する。
+`target-dir` 配下の `.css` / `.tsx` / `.jsx`（既定で `*.test.*`, `*.spec.*`, `*.stories.*`, `*.config.*`, `*.d.ts`, `e2e/`, `mocks/`, `public/`, `.storybook/`, `tests/`, `node_modules/`, `.next/`, `dist/` 等を除外）を対象に、以下を自動検証する。
+
+- **CSS**: 生カラー直書き禁止（`color-no-hex`, `color-named`, `function-disallowed-list`）と `:hover` の `@media (hover: hover)` ラップ必須（`defensive-css/no-accidental-hover`）。`entry-css` を指定した場合は、そのファイルのみ `:root` トークン定義のため色ルールを除外する（`:hover` ガードは有効）。
+- **TSX / JSX**: `style={{ ... }}` インラインスタイル内の生カラー（`#hex`, `rgb(`, `rgba(`, `hsl(`, `hsla(`）および Tailwind 任意値カラークラス（`bg-[#...]` 等）の禁止。
+
+※ `<style>{...}</style>` ブロック・JS 設定オブジェクト・エントリ CSS 基盤ガードレール・定性デザイン原則は [docs/ui-design.md](../../docs/ui-design.md) に基づきレビューで確認する。
 
 ```yaml
 permissions:
@@ -113,7 +118,7 @@ jobs:
       entry-css: "app/globals.css"
 ```
 
-既存リポジトリへ段階導入する場合は `fail-on-policy: false` や `exclude`、行末・直前行コメント（`nuage-ui-ignore-color`, `nuage-ui-ignore-hover`）を併用する。
+既存リポジトリへ段階導入する場合は `fail-on-policy: false` や `exclude`、例外コメント（CSS は `/* stylelint-disable-next-line <rule> */`、TSX/JSX は行末・直前行の `nuage-ui-ignore-color`）を併用する。
 
 ```yaml
 jobs:

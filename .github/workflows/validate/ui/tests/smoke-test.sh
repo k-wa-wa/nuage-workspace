@@ -22,49 +22,12 @@ create_valid_frontend() {
 :root {
   --bg: #191816;
   --fg: #e8e4dc;
-  --card: #211f1c;
-  --line: #2f2d29;
-  --muted: #98928a;
-  --accent: #60a5fa;
-  --warn: #e0a08a;
-  --success: #10b981;
-  --blocked: #f59e0b;
-  --font-sans: sans-serif;
-  --font-mono: monospace;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 14px;
-  --radius-full: 9999px;
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --ease-snappy: ease-out;
-  --duration-press: 0.08s;
-  --duration-release: 0.35s;
-  --scale-button-active: 0.94;
-  --scale-icon-active: 0.88;
+  --accent-subtle: rgba(96, 165, 250, 0.08);
 }
 
-* {
-  -webkit-tap-highlight-color: transparent;
-}
-
-button:focus:not(:focus-visible) {
-  outline: none;
-}
-
-button:focus-visible {
-  outline: 2px solid var(--accent);
-}
-
-button {
-  user-select: none;
-  touch-action: manipulation;
-}
-
-@media (max-width: 768px) {
-  input,
-  textarea,
-  select {
-    font-size: 16px;
+@media (hover: hover) {
+  button:hover {
+    opacity: 0.9;
   }
 }
 EOF
@@ -72,13 +35,8 @@ EOF
   cat << 'EOF' > "${dir}/src/components/Button.tsx"
 export function Button() {
   return (
-    <button style={{ color: "var(--fg)", backgroundColor: "var(--card)" }}>
+    <button style={{ color: "var(--fg)", backgroundColor: "var(--bg)" }}>
       Click
-      <style>{`
-        @media (hover: hover) {
-          button:hover { opacity: 0.9; }
-        }
-      `}</style>
     </button>
   );
 }
@@ -104,15 +62,17 @@ grep -qF "\`violations\`: \`0\`" "$SUMMARY_PASS"
 echo "=== Smoke Test 2: Policy violation FAIL (fail-on-policy=true) ==="
 FAIL_DIR="${TMP_ROOT}/fail-frontend"
 create_valid_frontend "$FAIL_DIR"
+cat << 'EOF' > "${FAIL_DIR}/src/components/bad.css"
+.bad {
+  color: #ffffff;
+}
+.bad:hover {
+  opacity: 0.5;
+}
+EOF
 cat << 'EOF' > "${FAIL_DIR}/src/components/Bad.tsx"
 export function Bad() {
-  return (
-    <div style={{ color: "#ffffff" }}>
-      <style>{`
-        .bad:hover { opacity: 0.5; }
-      `}</style>
-    </div>
-  );
+  return <div className="bg-[#191816]" style={{ color: "#ffffff" }} />;
 }
 EOF
 
@@ -121,8 +81,9 @@ if (cd "$FAIL_DIR" && env -u GITHUB_STEP_SUMMARY "$RUNNER" --entry-css src/index
   echo "❌ Expected policy violation run to fail, but it succeeded." >&2
   exit 1
 fi
-grep -q "nuage-ui/no-raw-color" "$FAIL_OUT"
+grep -q "color-no-hex" "$FAIL_OUT"
 grep -q "defensive-css/no-accidental-hover" "$FAIL_OUT"
+grep -q "nuage-ui/no-raw-color" "$FAIL_OUT"
 
 echo "=== Smoke Test 3: Policy violation warning PASS (fail-on-policy=false) ==="
 SUMMARY_WARN="${TMP_ROOT}/summary-warn.md"
@@ -135,8 +96,8 @@ grep -q "fail-on-policy: false" "$SUMMARY_WARN"
 echo "=== Smoke Test 4: --exclude CLI and EXCLUDE env var ==="
 (
   cd "$FAIL_DIR"
-  env -u GITHUB_STEP_SUMMARY "$RUNNER" --entry-css src/index.css --exclude "src/components/Bad.tsx" .
-  env -u GITHUB_STEP_SUMMARY EXCLUDE="src/components/Bad.tsx" "$RUNNER" --entry-css src/index.css .
+  env -u GITHUB_STEP_SUMMARY "$RUNNER" --entry-css src/index.css --exclude "src/components/Bad.tsx,src/components/bad.css" .
+  env -u GITHUB_STEP_SUMMARY EXCLUDE="src/components/Bad.tsx,src/components/bad.css" "$RUNNER" --entry-css src/index.css .
 )
 
 echo "=== Smoke Test 5: Missing node command detection ==="
