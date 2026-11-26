@@ -16,26 +16,23 @@ import rego.v1
 #    Always として動作する。しかし Argo CD ApplicationSet の kustomize.images や overlay で
 #    タグを :pr-<N> や :v1.2.3 等へ差し替えた瞬間、非 :latest タグの既定値（IfNotPresent）へ
 #    切り替わり、プレビュー環境で古いイメージが残留する。したがって YAML 上への Always 明示が必須である。
-# 3. :latest / タグ省略チェックを deny ではなく warn とした理由と floating タグの扱い:
-#    サードパーティ製イメージの :latest やタグ省略は、既存リポジトリの CI（fail-on-policy: true）を
-#    直ちに破壊せず段階的に未設定箇所を可視化するため warn とする（@sha256: digest 固定は対象外）。
-#    一方、事故影響が大きい自前イメージおよび Keel 監視対象コンテナは deny で確実にブロックする。
-#    なお postgres:16 や alpine:3.22 等のメジャー/マイナー指定 floating タグは、追従意図なら
-#    imagePullPolicy: Always、安定性優先ならパッチ固定タグや @sha256: digest 固定が望ましいが、
-#    イメージのタグ命名規則が多様で誤検知ノイズになりやすいため機械判定の対象外としている。
+# 3. 対象範囲と floating タグの扱い:
+#    事故影響が大きい自前イメージおよび Keel 監視対象コンテナは deny で imagePullPolicy: Always を強制する。
+#    一方、Keel 監視対象外の非自前（サードパーティ製）イメージの :latest・タグ省略、および
+#    postgres:16 や alpine:3.22 等のメジャー/マイナー指定 floating タグは、運用方針の多様性や
+#    誤検知ノイズを避けるため機械判定（warn / deny）の対象外としている。
+#    （追従意図なら imagePullPolicy: Always、安定性優先ならパッチ固定タグや @sha256: digest 固定が望ましい）
 # 4. keel.sh/monitorContainers の RE2 正規表現仕様:
 #    Keel の monitorContainers はカンマ区切りではなく Go（RE2）正規表現で評価されるため、
 #    複数指定は "app,sidecar" ではなく "^(app|sidecar)$" のように記述する必要がある。
 #    サードパーティ製サイドカー（例: headless-chrome）が同居する場合は監視対象コンテナ名のみに
 #    一致させ、意図しないコンテナが Keel 監視対象に入ることを防ぐ。
 # 5. オプトアウト方法と混在ワークロードでの注意点:
-#    - nuage.io/ignore-image-pull-policy: "true": imagePullPolicy および :latest 警告チェックを除外する。
+#    - nuage.io/ignore-image-pull-policy: "true": imagePullPolicy チェックを除外する。
 #    - nuage.io/ignore-keel: "true": 自前イメージ利用 Deployment の keel.sh/* アノテーション必須チェックを除外する。
 #    ※ nuage.io/ignore-image-pull-policy はコンテナ単位ではなくリソース（ワークロード）単位で効くため、
 #    自前イメージや Keel 監視対象コンテナと同居するワークロードには絶対に使用してはならない
-#    （対象コンテナの必須チェックまで無効化されるため）。混在ワークロード内のサードパーティ製サイドカーで
-#    :latest 警告を解消したい場合は、オプトアウトではなく固定タグ（または @sha256: digest）への固定、
-#    もしくは imagePullPolicy: Always の明示で対処する。
+#    （対象コンテナの必須チェックまで無効化されるため）。
 
 # 1. 自前イメージおよび Keel 監視対象コンテナに imagePullPolicy: Always が必須
 deny contains msg if {
@@ -86,13 +83,6 @@ keel_monitored_container(doc, c) if {
 	pattern == ""
 }
 
-is_keel_monitored_entry(doc, entry) if {
-	keel_monitored_workload(doc)
-	some c in workload_containers(doc)
-	keel_monitored_container(doc, c)
-	entry.name == object.get(c, "name", "<unnamed>")
-}
-
 deny contains msg if {
 	some doc in docs
 	keel_monitored_workload(doc)
@@ -105,43 +95,6 @@ deny contains msg if {
 	msg := sprintf("%s: コンテナ %q は Keel 監視対象 (%s) のため imagePullPolicy: Always が必須である (現在: %q)", [
 		resource_id(doc),
 		object.get(c, "name", "<unnamed>"),
-		img,
-		pull_policy,
-	])
-}
-
-# 1b. :latest タグまたはタグ省略（暗黙 :latest）で imagePullPolicy != Always の場合は警告する
-is_latest_or_untagged(img) if {
-	img != ""
-	not contains(img, "@")
-	parts := split(img, "/")
-	last := parts[count(parts) - 1]
-	last != ""
-	is_latest_or_untagged_segment(last)
-}
-
-is_latest_or_untagged_segment(seg) if {
-	not contains(seg, ":")
-}
-
-is_latest_or_untagged_segment(seg) if {
-	endswith(seg, ":latest")
-}
-
-warn contains msg if {
-	some doc in docs
-	not has_annotation(doc, "nuage.io/ignore-image-pull-policy")
-	not is_helm_excluded(doc)
-	some entry in all_containers_including_init(doc)
-	img := object.get(entry.container, "image", "")
-	not is_own_image(img)
-	not is_keel_monitored_entry(doc, entry)
-	is_latest_or_untagged(img)
-	pull_policy := object.get(entry.container, "imagePullPolicy", "")
-	pull_policy != "Always"
-	msg := sprintf("%s: コンテナ %q は :latest またはタグ省略イメージ (%s) を使用しているため imagePullPolicy: Always の明示、または固定タグ（@sha256: digest 含む）への固定を推奨する (現在: %q)", [
-		resource_id(doc),
-		entry.name,
 		img,
 		pull_policy,
 	])

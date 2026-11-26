@@ -189,8 +189,8 @@ test_keel_monitored_third_party_image_requires_pull_policy_always if {
 	count(denies_always) == 0
 }
 
-# 境界系: Keel 対象ワークロードでも monitorContainers に一致しない非自前サイドカーは deny されず、:latest なら warn のみとなる
-test_keel_unmonitored_sidecar_not_denied_but_latest_warns if {
+# 境界系: Keel 対象ワークロードでも monitorContainers に一致しない非自前サイドカーは :latest でも deny/warn されない
+test_keel_unmonitored_sidecar_not_denied_or_warned if {
 	dep := {
 		"apiVersion": "apps/v1",
 		"kind": "Deployment",
@@ -240,13 +240,10 @@ test_keel_unmonitored_sidecar_not_denied_but_latest_warns if {
 	denies := main.deny with input as [dep] with data.env as "common"
 	warns := main.warn with input as [dep] with data.env as "common"
 	count(denies) == 0
-	count(warns) == 1
-	some w in warns
-	contains(w, "headless-chrome")
-	contains(w, "chromedp/headless-shell:latest")
+	count(warns) == 0
 }
 
-# 異常系: keel.sh/monitorContainers 未指定時は全通常コンテナが Keel 監視対象となり非自前イメージも deny される（warn と重複しない）
+# 異常系: keel.sh/monitorContainers 未指定時は全通常コンテナが Keel 監視対象となり非自前イメージも deny される
 test_keel_without_monitor_containers_enforces_always_on_all_containers if {
 	dep := {
 		"apiVersion": "apps/v1",
@@ -285,8 +282,8 @@ test_keel_without_monitor_containers_enforces_always_on_all_containers if {
 	contains(m, "Keel 監視対象")
 }
 
-# 例外系: nuage.io/ignore-image-pull-policy: "true" で Keel 監視対象および :latest チェックがともにスキップされる
-test_ignore_image_pull_policy_skips_keel_and_latest if {
+# 例外系: nuage.io/ignore-image-pull-policy: "true" で Keel 監視対象および自前イメージの imagePullPolicy チェックがスキップされる
+test_ignore_image_pull_policy_skips_keel_and_own_checks if {
 	dep := {
 		"apiVersion": "apps/v1",
 		"kind": "Deployment",
@@ -323,10 +320,26 @@ test_ignore_image_pull_policy_skips_keel_and_latest if {
 	warns := main.warn with input as [dep] with data.env as "common"
 	count(denies) == 0
 	count(warns) == 0
+
+	own_dep := json.patch(valid_own_deployment, [
+		{
+			"op": "add",
+			"path": "/metadata/annotations/nuage.io~1ignore-image-pull-policy",
+			"value": "true",
+		},
+		{
+			"op": "remove",
+			"path": "/spec/template/spec/containers/0/imagePullPolicy",
+		},
+	])
+	denies_own := main.deny with input as [own_dep, valid_pdb] with data.env as "prod"
+	warns_own := main.warn with input as [own_dep, valid_pdb] with data.env as "prod"
+	count(denies_own) == 0
+	count(warns_own) == 0
 }
 
-# 境界値: :latest / タグ省略の warn 判定（ポート付きレジストリ・digest 固定・固定タグの区別）
-test_latest_and_untagged_image_warning_boundaries if {
+# 正常系: 非自前・非 Keel 監視コンテナが :latest やタグ省略イメージを使用していても deny/warn にならない
+test_third_party_latest_and_untagged_images_do_not_warn if {
 	job := {
 		"apiVersion": "batch/v1",
 		"kind": "Job",
@@ -335,6 +348,11 @@ test_latest_and_untagged_image_warning_boundaries if {
 			"template": {
 				"spec": {
 					"restartPolicy": "Never",
+					"initContainers": [{
+						"name": "init-curl",
+						"image": "curlimages/curl:latest",
+						"resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "32Mi"}},
+					}],
 					"containers": [
 						{
 							"name": "explicit-latest-unset",
@@ -386,17 +404,11 @@ test_latest_and_untagged_image_warning_boundaries if {
 	denies := main.deny with input as [job] with data.env as "common"
 	warns := main.warn with input as [job] with data.env as "common"
 	count(denies) == 0
-	count(warns) == 3
-	some w1 in warns
-	contains(w1, "explicit-latest-unset")
-	some w2 in warns
-	contains(w2, "untagged-ifnp")
-	some w3 in warns
-	contains(w3, "port-untagged")
+	count(warns) == 0
 }
 
-# WorkflowTemplate / Job の自前イメージは deny、非自前 :latest は warn となる（重複なし）
-test_workflow_template_and_job_own_vs_third_party_latest if {
+# WorkflowTemplate / Job の自前イメージは deny、非自前 :latest は warn が出ない
+test_workflow_template_and_job_own_denied_and_third_party_no_warn if {
 	wf := {
 		"apiVersion": "argoproj.io/v1alpha1",
 		"kind": "WorkflowTemplate",
@@ -423,11 +435,9 @@ test_workflow_template_and_job_own_vs_third_party_latest if {
 	denies_wf := main.deny with input as [wf] with data.env as "common"
 	warns_wf := main.warn with input as [wf] with data.env as "common"
 	count(denies_wf) == 1
-	count(warns_wf) == 1
+	count(warns_wf) == 0
 	some dw in denies_wf
 	contains(dw, "own-step")
-	some ww in warns_wf
-	contains(ww, "third-party-step")
 
 	job := {
 		"apiVersion": "batch/v1",
@@ -454,11 +464,9 @@ test_workflow_template_and_job_own_vs_third_party_latest if {
 	denies_job := main.deny with input as [job] with data.env as "common"
 	warns_job := main.warn with input as [job] with data.env as "common"
 	count(denies_job) == 1
-	count(warns_job) == 1
+	count(warns_job) == 0
 	some dj in denies_job
 	contains(dj, "init:load")
-	some wj in warns_job
-	contains(wj, "setup")
 }
 
 # 例外系: keel.sh/policy: "never" が設定されたワークロードは trigger: poll 併記でも Keel 監視対象から除外される
@@ -503,11 +511,11 @@ test_keel_policy_never_excluded if {
 	denies_latest := main.deny with input as [dep_latest] with data.env as "common"
 	warns_latest := main.warn with input as [dep_latest] with data.env as "common"
 	count(denies_latest) == 0
-	count(warns_latest) == 1
+	count(warns_latest) == 0
 }
 
-# 例外系: Helm 管理サードパーティワークロードは Keel / :latest 双方のチェックから除外される
-test_helm_excluded_skips_keel_and_latest_checks if {
+# 例外系: Helm 管理サードパーティワークロードは Keel チェックから除外される
+test_helm_excluded_skips_keel_checks if {
 	helm_dep := {
 		"apiVersion": "apps/v1",
 		"kind": "Deployment",
