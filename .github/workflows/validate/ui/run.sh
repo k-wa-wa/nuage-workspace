@@ -131,6 +131,7 @@ check_required_commands() {
 ensure_dependencies() {
   if [ -d "${SCRIPT_DIR}/node_modules/stylelint" ] && \
      [ -d "${SCRIPT_DIR}/node_modules/stylelint-plugin-defensive-css" ] && \
+     [ -d "${SCRIPT_DIR}/node_modules/@csstools/media-query-list-parser" ] && \
      [ -d "${SCRIPT_DIR}/node_modules/postcss-selector-parser" ] && \
      [ -d "${SCRIPT_DIR}/node_modules/postcss-value-parser" ] && \
      [ -d "${SCRIPT_DIR}/node_modules/typescript" ]; then

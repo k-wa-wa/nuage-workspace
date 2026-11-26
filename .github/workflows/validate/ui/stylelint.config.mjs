@@ -24,8 +24,8 @@ export default {
   plugins: [defensiveCss],
   rules: {
     "color-no-hex": true,
-    // トークン参照（rgba(var(--accent-rgb), 0.1) 等）は前処理でマスクし、生のカラー関数直書きを禁止する
-    "function-disallowed-list": ["rgb", "rgba", "hsl", "hsla"],
+    // トークン参照（rgba(var(--accent-rgb), 0.1) 等）は前処理でマスクし、生のカラー関数直書きを大文字小文字問わず禁止する
+    "function-disallowed-list": ["/^(?:rgba?|hsla?)$/i"],
     "defensive-css/no-accidental-hover": true,
   },
 };

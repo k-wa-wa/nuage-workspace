@@ -2,7 +2,7 @@
  * TypeScript / React (TSX / TS / JSX / JS) ソースの UI 規約スキャナ
  *
  * 【検査内容】
- * 1. <style>{...}</style>（<style jsx> 含む）から静的 CSS 断片（条件式の文字列枝を含む）を抽出し、
+ * 1. <style>{...}</style>（<style jsx> 含む）から静的 CSS 断片（条件式・論理式の文字列枝を含む）を抽出し、
  *    元のファイル行番号を維持したまま Stylelint へ渡す（生カラー禁止・@media (hover: hover) 必須）。
  * 2. style={{ ... }}、Tailwind 任意値（bg-[#...] 等）、JS/TS 文字列リテラル内の
  *    生カラー（#hex, rgb(), rgba(), hsl(), hsla()）を検出する。
@@ -10,6 +10,8 @@
  *    同一行末または直前行コメント（nuage-ui-ignore-color）でオプトアウトできる。
  */
 
+import { Input } from "postcss";
+import tokenize from "postcss/lib/tokenize";
 import ts from "typescript";
 
 export const IGNORE_COLOR_TOKEN = "nuage-ui-ignore-color";
@@ -35,6 +37,31 @@ export function addCommentLines(commentLines, startLine, text) {
 }
 
 /**
+ * CSS 文字列内の実際のコメントトークンを行番号マップへ抽出する。
+ *
+ * @param {string} css
+ * @param {number} [lineOffset]
+ * @param {Map<number, string>} [targetMap]
+ * @returns {Map<number, string>}
+ */
+export function collectCssCommentLines(css, lineOffset = 0, targetMap = new Map()) {
+  try {
+    const input = new Input(css);
+    const tokenizer = tokenize(input, { ignoreErrors: true });
+    while (!tokenizer.endOfFile()) {
+      const tok = tokenizer.nextToken();
+      if (tok[0] === "comment") {
+        const pos = input.fromOffset(tok[2]);
+        if (pos) addCommentLines(targetMap, lineOffset + pos.line, tok[1]);
+      }
+    }
+  } catch {
+    // トークン化不能な場合も検証全体は継続する
+  }
+  return targetMap;
+}
+
+/**
  * 指定行（1-based）または直前行のコメント内にオプトアウトトークンが含まれるかを判定する。
  *
  * @param {Map<number, string>} commentLines
@@ -50,13 +77,30 @@ export function hasIgnoreComment(commentLines, lineNumber, token) {
   );
 }
 
+function collectJsxTextSpans(sourceFile) {
+  const spans = [];
+  function walk(node) {
+    if (ts.isJsxText(node)) {
+      spans.push([node.getStart(sourceFile), node.getEnd()]);
+    }
+    ts.forEachChild(node, walk);
+  }
+  walk(sourceFile);
+  return spans;
+}
+
 function collectScriptCommentLines(sourceFile, sourceText) {
   const commentLines = new Map();
   const seen = new Set();
+  const jsxTextSpans = collectJsxTextSpans(sourceFile);
+
+  const overlapsJsxText = (pos, end) =>
+    jsxTextSpans.some(([s, e]) => pos < e && end > s);
 
   function record(ranges) {
     if (!ranges) return;
     for (const r of ranges) {
+      if (overlapsJsxText(r.pos, r.end)) continue;
       const key = `${r.pos}:${r.end}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -85,63 +129,80 @@ function getScriptKind(filePath) {
   return ts.ScriptKind.TS;
 }
 
-function extractStyleFromExpression(expr, sourceFile, sourceText, styleBlocks, visitExpr) {
+function extractStyleFromExpression(expr, sourceFile, sourceText, styleBlocks, commentLines, visitExpr) {
   if (!expr) return;
   if (ts.isParenthesizedExpression(expr)) {
-    extractStyleFromExpression(expr.expression, sourceFile, sourceText, styleBlocks, visitExpr);
+    extractStyleFromExpression(expr.expression, sourceFile, sourceText, styleBlocks, commentLines, visitExpr);
     return;
   }
   if (ts.isNoSubstitutionTemplateLiteral(expr) || ts.isStringLiteral(expr)) {
     const { line } = sourceFile.getLineAndCharacterOfPosition(expr.getStart(sourceFile) + 1);
-    if (expr.text.trim()) styleBlocks.push({ css: expr.text, startLine: line + 1 });
+    if (expr.text.trim()) {
+      const startLine = line + 1;
+      collectCssCommentLines(expr.text, startLine - 1, commentLines);
+      styleBlocks.push({ css: expr.text, startLine });
+    }
     return;
   }
   if (ts.isTemplateExpression(expr)) {
     const { line } = sourceFile.getLineAndCharacterOfPosition(expr.head.getStart(sourceFile) + 1);
+    const startLine = line + 1;
     let css = expr.head.text;
     let prevEnd = expr.head.getEnd();
+    const exprsToVisit = [];
     for (const span of expr.templateSpans) {
       const litStart = span.literal.getStart(sourceFile);
       const newlines = (sourceText.slice(prevEnd, litStart).match(/\n/g) || []).length;
       css += `var(--nuage-expr)${"\n".repeat(newlines)}${span.literal.text}`;
       prevEnd = span.literal.getEnd();
-      visitExpr(span.expression);
+      exprsToVisit.push(span.expression);
     }
-    if (css.trim()) styleBlocks.push({ css, startLine: line + 1 });
+    if (css.trim()) {
+      collectCssCommentLines(css, startLine - 1, commentLines);
+      styleBlocks.push({ css, startLine });
+    }
+    for (const subExpr of exprsToVisit) {
+      visitExpr(subExpr);
+    }
     return;
   }
   if (ts.isConditionalExpression(expr)) {
     visitExpr(expr.condition);
-    extractStyleFromExpression(expr.whenTrue, sourceFile, sourceText, styleBlocks, visitExpr);
-    extractStyleFromExpression(expr.whenFalse, sourceFile, sourceText, styleBlocks, visitExpr);
+    extractStyleFromExpression(expr.whenTrue, sourceFile, sourceText, styleBlocks, commentLines, visitExpr);
+    extractStyleFromExpression(expr.whenFalse, sourceFile, sourceText, styleBlocks, commentLines, visitExpr);
     return;
   }
-  if (
-    ts.isBinaryExpression(expr) &&
-    (expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
-      expr.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-      expr.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
-  ) {
-    visitExpr(expr.left);
-    extractStyleFromExpression(expr.right, sourceFile, sourceText, styleBlocks, visitExpr);
-    return;
+  if (ts.isBinaryExpression(expr)) {
+    const op = expr.operatorToken.kind;
+    if (op === ts.SyntaxKind.BarBarToken || op === ts.SyntaxKind.QuestionQuestionToken) {
+      extractStyleFromExpression(expr.left, sourceFile, sourceText, styleBlocks, commentLines, visitExpr);
+      extractStyleFromExpression(expr.right, sourceFile, sourceText, styleBlocks, commentLines, visitExpr);
+      return;
+    }
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) {
+      visitExpr(expr.left);
+      extractStyleFromExpression(expr.right, sourceFile, sourceText, styleBlocks, commentLines, visitExpr);
+      return;
+    }
   }
   visitExpr(expr);
 }
 
-function extractStyleElementBlocks(jsxElement, sourceFile, sourceText, visitExpr) {
+function extractStyleElementBlocks(jsxElement, sourceFile, sourceText, commentLines, visitExpr) {
   const blocks = [];
   for (const child of jsxElement.children) {
     if (ts.isJsxText(child)) {
       const text = child.getText(sourceFile);
       if (text.trim()) {
         const { line } = sourceFile.getLineAndCharacterOfPosition(child.getStart(sourceFile));
-        blocks.push({ css: text, startLine: line + 1 });
+        const startLine = line + 1;
+        collectCssCommentLines(text, startLine - 1, commentLines);
+        blocks.push({ css: text, startLine });
       }
       continue;
     }
     if (ts.isJsxExpression(child) && child.expression) {
-      extractStyleFromExpression(child.expression, sourceFile, sourceText, blocks, visitExpr);
+      extractStyleFromExpression(child.expression, sourceFile, sourceText, blocks, commentLines, visitExpr);
     }
   }
   return blocks;
@@ -166,12 +227,20 @@ function isModuleSpecifier(node) {
   );
 }
 
+function getPropertyAssignmentName(propNode) {
+  const name = propNode.name;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) {
+    return name.text;
+  }
+  return null;
+}
+
 function findEnclosingAttrInfo(node) {
   let jsxAttrName = null;
   let propName = null;
   for (let cur = node.parent; cur; cur = cur.parent) {
-    if (!propName && ts.isPropertyAssignment(cur) && ts.isIdentifier(cur.name)) {
-      propName = cur.name.text;
+    if (!propName && ts.isPropertyAssignment(cur)) {
+      propName = getPropertyAssignmentName(cur);
     }
     if (ts.isJsxAttribute(cur) && ts.isIdentifier(cur.name)) {
       jsxAttrName = cur.name.text;
@@ -188,7 +257,12 @@ function maskUrlFunctionsInText(text) {
 
 function shouldReportColorMatch(node, sliceText, value, index) {
   const { jsxAttrName, propName } = findEnclosingAttrInfo(node);
-  if (jsxAttrName === "href" || jsxAttrName === "xlinkHref" || propName === "href") {
+  if (
+    jsxAttrName === "href" ||
+    jsxAttrName === "xlinkHref" ||
+    propName === "href" ||
+    propName === "xlinkHref"
+  ) {
     return false;
   }
 
@@ -239,7 +313,7 @@ export function analyzeScriptFile(filePath, sourceText) {
       ts.isIdentifier(node.openingElement.tagName) &&
       node.openingElement.tagName.text === "style"
     ) {
-      styleBlocks.push(...extractStyleElementBlocks(node, sourceFile, sourceText, visit));
+      styleBlocks.push(...extractStyleElementBlocks(node, sourceFile, sourceText, commentLines, visit));
       return;
     }
 

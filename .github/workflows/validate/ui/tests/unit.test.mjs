@@ -511,4 +511,124 @@ export function MultiHover() {
       [7, 8],
     );
   });
+
+  it("rejects uppercase/mixed-case RGB/hSl functions and skips non-color hex or quoted/object hrefs", async () => {
+    const dir = createTempProject({
+      "app/globals.css": createValidEntryCss(`
+.ok-fn { color: RGB(var(--accent-rgb), 0.1); --target: #section; }
+.bad-fn1 { color: RGB(0 0 0); }
+.bad-fn2 { color: hSl(210, 50%, 50%); }
+`),
+      "components/Links.tsx": `
+export function Links() {
+  const obj1 = { "href": "#123456" };
+  const obj2 = { xlinkHref: "#123456" };
+  return <a href={obj1.href} xlinkHref={obj2.xlinkHref}>ok</a>;
+}
+`,
+    });
+
+    const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
+    assert.deepEqual(
+      res.violations.map((v) => [v.file, v.line, v.rule]),
+      [
+        ["app/globals.css", 52, "function-disallowed-list"],
+        ["app/globals.css", 53, "function-disallowed-list"],
+      ],
+    );
+  });
+
+  it("enforces strict @media (hover: hover), selector :hover pseudo-class, and logical-or <style> hover checks", async () => {
+    const dir = createTempProject({
+      "app/globals.css": createValidEntryCss(`
+@MEDIA (HOVER: HOVER) {
+  .ok-upper:hover { opacity: 0.9; }
+}
+[data-help=":hover"] { opacity: 0.9; }
+@media not (hover: hover) {
+  .bad-not-media:hover { opacity: 0.8; }
+}
+@media (hover: hover), (max-width: 600px) {
+  .bad-or-media:hover { opacity: 0.8; }
+}
+button:not(:hover) { opacity: 0.9; }
+`),
+      "components/LogicalStyle.tsx": `
+export function LogicalStyle({ enabled }: { enabled: boolean }) {
+  return <style>{(enabled && ".a:hover { opacity: .5 }") || ".b { opacity: 1 }"}</style>;
+}
+`,
+    });
+
+    const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
+    assert.deepEqual(
+      res.violations.map((v) => [v.file, v.line, v.rule]),
+      [
+        ["app/globals.css", 56, "defensive-css/no-accidental-hover"],
+        ["app/globals.css", 59, "defensive-css/no-accidental-hover"],
+        ["app/globals.css", 61, "defensive-css/no-accidental-hover"],
+        ["components/LogicalStyle.tsx", 3, "defensive-css/no-accidental-hover"],
+      ],
+    );
+  });
+
+  it("handles CSS comments inside <style> template expressions while ignoring JsxText fake comments and dot-dir globs", async () => {
+    const dir = createTempProject({
+      "app/globals.css": createValidEntryCss(),
+      ".agents/example.ts": `export const c = "#fff";`,
+      "components/TemplateComment.tsx": `
+export function TemplateComment() {
+  return (
+    <div>
+      <style>{\`
+        .ok { color: \${"#fff"}; /* nuage-ui-ignore-color */ }
+      \`}</style>
+      <a style={{ color: "#fff" }}>/* nuage-ui-ignore-color */</a>
+    </div>
+  );
+}
+`,
+    });
+
+    const res = await runUiLint({
+      targetDir: dir,
+      entryCss: "app/globals.css",
+      excludes: ["**/*.ts"],
+    });
+    assert.deepEqual(
+      res.violations.map((v) => [v.file, v.line, v.rule]),
+      [["components/TemplateComment.tsx", 8, "nuage-ui/no-raw-color"]],
+    );
+  });
+
+  it("validates final/important entry CSS declarations, direct :root tokens, and nested :root rules", async () => {
+    const invalidCss = createValidEntryCss(`
+:root {
+  .child { --bg: #191816; }
+  .badge { color: #fff; }
+}
+@media (max-width: 768px) {
+  input, textarea, select { font-size: 16px; font-size: 12px; }
+}
+`)
+      .replace("  --bg: #191816;\n", "  --bg: ;\n")
+      .replace("  outline: 2px solid var(--accent);\n", "  outline: none;\n  outline-color: var(--accent);\n")
+      .replace("    font-size: 16px;\n", "");
+
+    const dirInvalid = createTempProject({ "app/globals.css": invalidCss });
+    const resInvalid = await runUiLint({ targetDir: dirInvalid, entryCss: "app/globals.css" });
+    const msgs = resInvalid.violations.map((v) => v.message).join("\n");
+    assert.match(msgs, /必須 CSS 変数が不足している: --bg/);
+    assert.match(msgs, /:focus-visible/);
+    assert.match(msgs, /input, textarea, select/);
+    assert.ok(resInvalid.violations.some((v) => v.rule === "color-no-hex"));
+
+    const importantCss = createValidEntryCss().replace(
+      "font-size: 16px;",
+      "font-size: 16px !important; font-size: 12px;",
+    );
+    const dirValid = createTempProject({ "app/globals.css": importantCss });
+    const resValid = await runUiLint({ targetDir: dirValid, entryCss: "app/globals.css" });
+    assert.equal(resValid.violations.length, 0);
+  });
 });
