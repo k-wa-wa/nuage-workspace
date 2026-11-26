@@ -247,8 +247,11 @@ export function Button() {
   return (
     <>
       {/* nuage-ui-ignore-hover */}
+      <style>{\`.btn-inline:hover { opacity: 0.9; }\`}</style>
       <style>{\`
-        .btn:hover { opacity: 0.9; }
+        /* nuage-ui-ignore-hover */
+        .btn-prev:hover { opacity: 0.9; }
+        .btn-same:hover { opacity: 0.9; } /* nuage-ui-ignore-hover */
       \`}</style>
     </>
   );
@@ -328,5 +331,93 @@ describe("exclude handling", () => {
       excludes: ["legacy"],
     });
     assert.equal(resWithExclude.violations.length, 0);
+  });
+});
+
+describe("review regression guards", () => {
+  it("ignores .stylelintignore in cwd and still validates CSS files", async () => {
+    const dir = createTempProject({
+      ".stylelintignore": "app/globals.css\nstyles/bad.css\n",
+      "app/globals.css": createValidEntryCss(),
+      "styles/bad.css": ".x { color: #fff; }\n",
+    });
+
+    const prevCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
+      assert.equal(res.violations.length, 1);
+      assert.equal(res.violations[0].file, "styles/bad.css");
+    } finally {
+      process.chdir(prevCwd);
+    }
+  });
+
+  it("detects raw colors inside <style> ${...} expressions and skips token-backed rgba(var()) / non-color hex", async () => {
+    const dir = createTempProject({
+      "app/globals.css": createValidEntryCss(`
+.token-alpha {
+  background: rgba(var(--accent-rgb), 0.5);
+  color: hsl(var(--fg-hsl));
+}
+.raw-rgb-var-alpha {
+  color: rgba(255, 0, 0, var(--alpha));
+}
+`),
+      "components/Dynamic.tsx": `
+export function Dynamic({ on }: { on: boolean }) {
+  const label = "Issue #123";
+  const anchor = "#cafe";
+  const feed = "#feed";
+  return (
+    <div>
+      <a href="#add">{label} {anchor} {feed}</a>
+      <span style={{ color: "#add" }}>ok</span>
+      <style>{\`
+        .a { color: \${on ? "#fff" : "#000"}; }
+      \`}</style>
+    </div>
+  );
+}
+`,
+    });
+
+    const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
+    assert.equal(res.violations.length, 4);
+    assert.deepEqual(
+      res.violations.map((v) => [v.file, v.line, v.rule]),
+      [
+        ["app/globals.css", 56, "nuage-ui/no-raw-color"],
+        ["components/Dynamic.tsx", 9, "nuage-ui/no-raw-color"],
+        ["components/Dynamic.tsx", 11, "nuage-ui/no-raw-color"],
+        ["components/Dynamic.tsx", 11, "nuage-ui/no-raw-color"],
+      ],
+    );
+  });
+
+  it("does not suppress an entire <style> block with a single preceding ignore comment", async () => {
+    const dir = createTempProject({
+      "app/globals.css": createValidEntryCss(),
+      "components/MultiHover.tsx": `
+export function MultiHover() {
+  return (
+    <div>
+      {/* nuage-ui-ignore-hover */}
+      <style>{\`
+        .c:hover { opacity: 0.8; }
+        .d:hover { opacity: 0.7; }
+      \`}</style>
+    </div>
+  );
+}
+`,
+    });
+
+    const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
+    assert.equal(res.violations.length, 2);
+    assert.deepEqual(
+      res.violations.map((v) => v.line),
+      [7, 8],
+    );
   });
 });

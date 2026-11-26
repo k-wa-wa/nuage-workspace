@@ -331,9 +331,11 @@ export async function runUiLint({ targetDir, entryCss = "", excludes = [] }) {
   }
 
   // 1. エントリ CSS の検証（必須トークン・ガードレール + 生カラー例外 + :hover）
+  // 呼び出し元リポジトリの .stylelintignore に影響されないよう、ファイルパスではなく code として渡す
   if (entryCssPath) {
+    const entryCode = fs.readFileSync(entryCssPath, "utf8");
     const entryResult = await stylelint.lint({
-      files: [entryCssPath],
+      code: entryCode,
       config: createStylelintConfig({ isEntryCss: true }),
     });
     for (const res of entryResult.results) {
@@ -350,13 +352,15 @@ export async function runUiLint({ targetDir, entryCss = "", excludes = [] }) {
   }
 
   // 2. 一般 CSS ファイルの検証
-  if (nonEntryCssFiles.length > 0) {
+  const nonEntryConfig = createStylelintConfig({ isEntryCss: false });
+  for (const cssPath of nonEntryCssFiles) {
+    const cssCode = fs.readFileSync(cssPath, "utf8");
     const cssResult = await stylelint.lint({
-      files: nonEntryCssFiles,
-      config: createStylelintConfig({ isEntryCss: false }),
+      code: cssCode,
+      config: nonEntryConfig,
     });
+    const rel = toRel(cssPath);
     for (const res of cssResult.results) {
-      const rel = toRel(res.source);
       for (const warn of res.warnings) {
         violations.push({
           file: rel,
@@ -397,8 +401,7 @@ export async function runUiLint({ targetDir, entryCss = "", excludes = [] }) {
           const ignoreToken = mapStylelintRuleToIgnoreToken(warn.rule);
           if (
             ignoreToken &&
-            (hasIgnoreComment(lines, mappedLine, ignoreToken) ||
-              hasIgnoreComment(lines, block.elementStartLine, ignoreToken))
+            hasIgnoreComment(lines, mappedLine, ignoreToken)
           ) {
             continue;
           }

@@ -54,9 +54,18 @@ export const REQUIRED_CSS_VARS = [
 
 // URL パスやフラグメント（/path#123, #vr-video 等）との誤検知を避けつつ、
 // #RGB / #RGBA / #RRGGBB / #RRGGBBAA と rgb() / rgba() / hsl() / hsla() を検出する。
+// 関数カラー内部の var(...) 等 1 段の括弧ネストも崩さず取得する。
 const HEX_COLOR_SOURCE = "(?<![A-Za-z0-9_/.-])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![A-Za-z0-9_-])";
-const FUNC_COLOR_SOURCE = "\\b(?:rgba?|hsla?)\\s*\\([^)]*\\)";
+const FUNC_COLOR_SOURCE = "\\b(?:rgba?|hsla?)\\s*\\((?:[^()]|\\([^)]*\\))*\\)";
 export const RAW_COLOR_REGEX = new RegExp(`${HEX_COLOR_SOURCE}|${FUNC_COLOR_SOURCE}`, "gi");
+
+function isTokenBackedColorFunction(colorLiteral) {
+  const openIdx = colorLiteral.indexOf("(");
+  const closeIdx = colorLiteral.lastIndexOf(")");
+  if (openIdx === -1 || closeIdx <= openIdx) return false;
+  const inner = colorLiteral.slice(openIdx + 1, closeIdx).trim().toLowerCase();
+  return inner.startsWith("var(");
+}
 
 /**
  * 指定行（1-based）または直前行にオプトアウトコメントが含まれるかを判定する。
@@ -101,6 +110,9 @@ export function findRawColors(text, options = {}) {
   RAW_COLOR_REGEX.lastIndex = 0;
   let match;
   while ((match = RAW_COLOR_REGEX.exec(source)) !== null) {
+    if (!match[0].startsWith("#") && isTokenBackedColorFunction(match[0])) {
+      continue;
+    }
     const before = source.slice(0, match.index);
     const lineOffset = before.split("\n").length - 1;
     matches.push({
