@@ -1,6 +1,6 @@
 # 共通 GitHub Actions ワークフロー
 
-各リポジトリから `workflow_call` で呼び出す共通 Reusable Workflow 群である。詳細な入力パラメータや検証ルールは各ワークフロー定義および [validate/k8s/](validate/k8s/) を参照すること。
+各リポジトリから `workflow_call` で呼び出す共通 Reusable Workflow 群である。詳細な入力パラメータや検証ルールは各ワークフロー定義および [validate/k8s/](validate/k8s/)・[validate/ui/](validate/ui/) を参照すること。
 
 ## 一覧
 
@@ -8,7 +8,8 @@
 | :-- | :-- |
 | `docker-build-push.yml` | Docker イメージのビルド、Trivy 脆弱性スキャン（合格時のみ GHCR へ push）、PR プレビューコメント投稿 |
 | `k8s-validate.yml` | Kustomize ビルド、`yamllint` / `kubeconform` / `pluto` 検証、Conftest（Rego）による k8s 標準ポリシー検査 |
-| `ci.yml` | このリポジトリ内の Rego ポリシーテストとワークフロー YAML の lint（他リポジトリからは呼ばない） |
+| `ui-validate.yml` | Stylelint と AST スキャナによる Nuage UI 設計標準（生カラー禁止・`:hover` ガード・エントリ CSS トークン/ガードレール）検査 |
+| `ci.yml` | このリポジトリ内の Rego ポリシーテスト、UI lint テスト、`shellcheck`、ワークフロー YAML の lint（他リポジトリからは呼ばない） |
 
 ## 使い方
 
@@ -94,4 +95,51 @@ fi
 # 例: "$RUNNER" --preview k8s/overlays/preview
 # 例: "$RUNNER" manifests/bootstrap/kustomization.yaml manifests/apps/*.yaml
 "$RUNNER" --prod k8s/overlays/prod
+```
+
+### `ui-validate.yml`
+
+`target-dir` 配下の `.css` / `.tsx` / `.ts` / `.jsx` / `.js`（既定で `*.test.*`, `*.spec.*`, `*.stories.*`, `*.config.*`, `*.d.ts`, `e2e/`, `mocks/`, `public/`, `.storybook/`, `tests/`, `node_modules/`, `.next/`, `dist/` 等を除外）を対象に、生カラー直書き禁止・`:hover` の `@media (hover: hover)` ラップ必須・`entry-css` 指定時の必須トークンとモバイル/アクセシビリティガードレールを検証する。
+
+```yaml
+permissions:
+  contents: read
+
+jobs:
+  validate-ui:
+    uses: k-wa-wa/nuage-workspace/.github/workflows/ui-validate.yml@master
+    with:
+      target-dir: "frontend"
+      entry-css: "app/globals.css"
+```
+
+既存リポジトリへ段階導入する場合は `fail-on-policy: false` や `exclude`、行末・直前行コメント（`nuage-ui-ignore-color`, `nuage-ui-ignore-hover`）を併用する。
+
+```yaml
+jobs:
+  validate-ui:
+    uses: k-wa-wa/nuage-workspace/.github/workflows/ui-validate.yml@master
+    with:
+      target-dir: "frontend"
+      entry-css: "app/globals.css"
+      exclude: |
+        legacy/**
+      fail-on-policy: false
+```
+
+#### ローカル実行
+
+```bash
+LOCAL_RUNNER="${HOME}/ghq/github.com/k-wa-wa/nuage-workspace/.github/workflows/validate/ui/run.sh"
+if [ -x "$LOCAL_RUNNER" ]; then
+  RUNNER="$LOCAL_RUNNER"
+else
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  curl -sSfL "https://github.com/k-wa-wa/nuage-workspace/archive/refs/heads/master.tar.gz" \
+    | tar -xz -C "$TMP_DIR" "nuage-workspace-master/.github/workflows/validate/ui"
+  RUNNER="${TMP_DIR}/nuage-workspace-master/.github/workflows/validate/ui/run.sh"
+fi
+
+"$RUNNER" --entry-css app/globals.css frontend
 ```
