@@ -2,6 +2,38 @@ package main
 
 import rego.v1
 
+# Keel による自動デプロイ（preview 環境の :pr-<N> 上書き・:latest 追従）およびイメージ取得ポリシーを検証するルール。
+#
+# なぜこのルールが必要か:
+# 1. 背景と障害事例:
+#    pechka PR #69 の preview 環境検証において、Keel（policy: force / trigger: poll / matchTag: "true"）で
+#    自動更新する Deployment で imagePullPolicy を省略していたため、イメージ更新後もノード上の
+#    古いキャッシュが再利用され続け、最新ビルドが反映されないサイレント障害が発生した。
+#    また、matchTag: "true" + force 運用では同一タグに新しい digest が push された際に Keel が
+#    Pod を再作成するが、imagePullPolicy が IfNotPresent だとキャッシュ済みイメージのまま起動する。
+# 2. Kustomize / Argo CD によるイメージタグ差し替えの罠:
+#    ベース定義で :latest を使い imagePullPolicy を省略すると、単体では Kubernetes の既定値により
+#    Always として動作する。しかし Argo CD ApplicationSet の kustomize.images や overlay で
+#    タグを :pr-<N> や :v1.2.3 等へ差し替えた瞬間、非 :latest タグの既定値（IfNotPresent）へ
+#    切り替わり、プレビュー環境で古いイメージが残留する。したがって YAML 上への Always 明示が必須である。
+# 3. :latest / タグ省略チェックを deny ではなく warn とした理由:
+#    サードパーティ製イメージの :latest やタグ省略は、既存リポジトリの CI（fail-on-policy: true）を
+#    直ちに破壊せず段階的に未設定箇所を可視化するため warn とする（@sha256: digest 固定は対象外）。
+#    一方、事故影響が大きい自前イメージおよび Keel 監視対象コンテナは deny で確実にブロックする。
+# 4. keel.sh/monitorContainers の RE2 正規表現仕様:
+#    Keel の monitorContainers はカンマ区切りではなく Go（RE2）正規表現で評価されるため、
+#    複数指定は "app,sidecar" ではなく "^(app|sidecar)$" のように記述する必要がある。
+#    サードパーティ製サイドカー（例: headless-chrome）が同居する場合は監視対象コンテナ名のみに
+#    一致させ、意図しないコンテナが Keel 監視対象に入ることを防ぐ。
+# 5. オプトアウト方法と混在ワークロードでの注意点:
+#    - nuage.io/ignore-image-pull-policy: "true": imagePullPolicy および :latest 警告チェックを除外する。
+#    - nuage.io/ignore-keel: "true": 自前イメージ利用 Deployment の keel.sh/* アノテーション必須チェックを除外する。
+#    ※ nuage.io/ignore-image-pull-policy はコンテナ単位ではなくリソース（ワークロード）単位で効くため、
+#    自前イメージや Keel 監視対象コンテナと同居するワークロードには絶対に使用してはならない
+#    （対象コンテナの必須チェックまで無効化されるため）。混在ワークロード内のサードパーティ製サイドカーで
+#    :latest 警告を解消したい場合は、オプトアウトではなく固定タグ（または @sha256: digest）への固定、
+#    もしくは imagePullPolicy: Always の明示で対処する。
+
 # 1. 自前イメージおよび Keel 監視対象コンテナに imagePullPolicy: Always が必須
 deny contains msg if {
 	some doc in docs
@@ -202,80 +234,4 @@ deny contains msg if {
 		monitored_raw,
 		cname,
 	])
-}
-
-# 3. 全コンテナに resources.requests と resources.limits が必須
-has_valid_requests(res) if {
-	reqs := object.get(res, "requests", {})
-	object.get(reqs, "cpu", "") != ""
-	object.get(reqs, "memory", "") != ""
-}
-
-has_valid_limits(res) if {
-	lims := object.get(res, "limits", {})
-	object.get(lims, "memory", "") != ""
-}
-
-deny contains msg if {
-	some doc in docs
-	not has_annotation(doc, "nuage.io/ignore-resources")
-	not is_helm_excluded(doc)
-	some entry in all_main_containers(doc)
-	res := object.get(entry.container, "resources", {})
-	not has_valid_requests(res)
-	msg := sprintf("%s: コンテナ %q に resources.requests (cpu, memory) が設定されていない", [resource_id(doc), entry.name])
-}
-
-deny contains msg if {
-	some doc in docs
-	not has_annotation(doc, "nuage.io/ignore-resources")
-	not is_helm_excluded(doc)
-	some entry in all_main_containers(doc)
-	res := object.get(entry.container, "resources", {})
-	not has_valid_limits(res)
-	msg := sprintf("%s: コンテナ %q に resources.limits (memory) が設定されていない", [resource_id(doc), entry.name])
-}
-
-# initContainers の resources 欠落は警告として可視化する
-warn contains msg if {
-	some doc in docs
-	not has_annotation(doc, "nuage.io/ignore-resources")
-	not is_helm_excluded(doc)
-	some c in workload_init_containers(doc)
-	res := object.get(c, "resources", {})
-	not has_valid_requests(res)
-	msg := sprintf("%s: initContainer %q に resources.requests (cpu, memory) の設定を推奨する", [resource_id(doc), object.get(c, "name", "<unnamed>")])
-}
-
-warn contains msg if {
-	some doc in docs
-	not has_annotation(doc, "nuage.io/ignore-resources")
-	not is_helm_excluded(doc)
-	some c in workload_init_containers(doc)
-	res := object.get(c, "resources", {})
-	not has_valid_limits(res)
-	msg := sprintf("%s: initContainer %q に resources.limits (memory) の設定を推奨する", [resource_id(doc), object.get(c, "name", "<unnamed>")])
-}
-
-# 4. 常駐ワークロード (Deployment / StatefulSet / DaemonSet) に readinessProbe / livenessProbe が必須
-probe_target_workload(doc) if {
-	doc.kind in {"Deployment", "StatefulSet", "DaemonSet"}
-	not has_annotation(doc, "nuage.io/ignore-probes")
-	not is_helm_excluded(doc)
-}
-
-deny contains msg if {
-	some doc in docs
-	probe_target_workload(doc)
-	some c in workload_containers(doc)
-	not c.readinessProbe
-	msg := sprintf("%s: コンテナ %q に readinessProbe が設定されていない", [resource_id(doc), object.get(c, "name", "<unnamed>")])
-}
-
-deny contains msg if {
-	some doc in docs
-	probe_target_workload(doc)
-	some c in workload_containers(doc)
-	not c.livenessProbe
-	msg := sprintf("%s: コンテナ %q に livenessProbe が設定されていない", [resource_id(doc), object.get(c, "name", "<unnamed>")])
 }

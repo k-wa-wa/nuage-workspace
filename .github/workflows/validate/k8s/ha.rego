@@ -2,7 +2,18 @@ package main
 
 import rego.v1
 
-# prod 環境のみで適用する無停止・高可用性ポリシー
+# prod 環境のみで適用する無停止・高可用性（HA）ポリシー。
+#
+# なぜこのルールが必要か:
+# 1. 無停止デプロイと障害・メンテナンス耐性の担保:
+#    prod 環境のステートレス Deployment が単一レプリカや単一ノードに偏っていると、ノード障害や
+#    Kubernetes のアップグレード・ノードドレイン時にサービスが全断する。そのため以下を必須とする。
+#    - replicas >= 2（または HPA の minReplicas >= 2）による冗長化
+#    - topologySpreadConstraints または podAntiAffinity（topologyKey: kubernetes.io/hostname）によるノード分散
+#    - minAvailable / maxUnavailable がドレインを許容する PodDisruptionBudget の存在
+# 2. 対象外とオプトアウト:
+#    ReadWriteOnce / ReadWriteOncePod PVC を参照するワークロードは複数 Pod 同時マウント不可のため自動除外する。
+#    それ以外でやむを得ず単一構成にする場合は nuage.io/ignore-ha: "true" でオプトアウトする。
 
 # ReadWriteOnce / ReadWriteOncePod PVC の判定
 is_rwo_pvc(pvc) if {
