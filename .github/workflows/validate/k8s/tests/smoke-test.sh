@@ -515,7 +515,7 @@ if (cd "$EXT_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" bundle >"$PLUTO_DIR_O
 fi
 grep -q "bundle/zz-deprecated.yaml" "$PLUTO_DIR_OUT"
 
-echo "=== Smoke Test 14: Keel third-party deny and :latest warn via run.sh ==="
+echo "=== Smoke Test 14: Keel third-party deny and third-party :latest no-warn via run.sh ==="
 PULL_REPO="${TMP_ROOT}/pull-repo"
 mkdir -p "${PULL_REPO}/manifests"
 cat << 'EOF' > "${PULL_REPO}/manifests/keel-third-party.yaml"
@@ -564,11 +564,11 @@ if (cd "$PULL_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" manifests/keel-third
 fi
 grep -q "Keel 監視対象" "$KEEL_DENY_OUT"
 
-cat << 'EOF' > "${PULL_REPO}/manifests/latest-warn.yaml"
+cat << 'EOF' > "${PULL_REPO}/manifests/third-party-latest.yaml"
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: latest-warn-job
+  name: third-party-latest-job
 spec:
   template:
     spec:
@@ -584,12 +584,16 @@ spec:
               memory: 32Mi
 EOF
 
-LATEST_WARN_OUT="${TMP_ROOT}/latest-warn.out"
+THIRD_PARTY_LATEST_OUT="${TMP_ROOT}/third-party-latest.out"
 (
   cd "$PULL_REPO"
-  env -u GITHUB_STEP_SUMMARY "$RUNNER" manifests/latest-warn.yaml >"$LATEST_WARN_OUT" 2>&1
+  env -u GITHUB_STEP_SUMMARY "$RUNNER" manifests/third-party-latest.yaml >"$THIRD_PARTY_LATEST_OUT" 2>&1
 )
-grep -q "WARN" "$LATEST_WARN_OUT"
-grep -q "curlimages/curl:latest" "$LATEST_WARN_OUT"
+if grep -q "WARN" "$THIRD_PARTY_LATEST_OUT"; then
+  echo "❌ Expected no WARN for non-own non-Keel :latest image, but found WARN." >&2
+  cat "$THIRD_PARTY_LATEST_OUT" >&2
+  exit 1
+fi
+grep -q "0 warnings" "$THIRD_PARTY_LATEST_OUT"
 
 echo "✅ All smoke tests passed."
