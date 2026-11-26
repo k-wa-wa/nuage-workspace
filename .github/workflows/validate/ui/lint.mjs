@@ -25,6 +25,7 @@ import {
   isMediaConditionListWithOr,
   isMediaFeature,
   isMediaFeaturePlain,
+  isMediaFeatureRange,
   isMediaInParens,
   isMediaNot,
   isMediaQueryInvalid,
@@ -93,9 +94,16 @@ function normalizeExcludes(patterns) {
 
 function matchesGlobWithDots(targetPath, pattern) {
   if (path.matchesGlob(targetPath, pattern)) return true;
-  // path.matchesGlob はドット始まりセグメントを * / ** でスキップするため、非ドット表現でも照合する
-  const dotSafe = targetPath.replace(/(^|\/)\.(?=[^/])/g, "$1__dot__");
-  return dotSafe !== targetPath && path.matchesGlob(dotSafe, pattern);
+  // path.matchesGlob はドット始まりセグメントを * / ** でスキップするため、衝突しない動的プレフィックスで両辺を揃えて照合する
+  let prefix = "__ndot_";
+  while (targetPath.includes(prefix) || pattern.includes(prefix)) {
+    prefix += "_";
+  }
+  const maskDots = (s) => s.replace(/(^|\/)\.(?!\.?(?:\/|$))/g, `$1${prefix}`);
+  const maskedPath = maskDots(targetPath);
+  const maskedPattern = maskDots(pattern);
+  if (maskedPath === targetPath && maskedPattern === pattern) return false;
+  return path.matchesGlob(maskedPath, maskedPattern);
 }
 
 function matchesUserExclude(relPath, excludes) {
@@ -165,16 +173,24 @@ function resolveEntryCssPath(targetDir, rawEntryCss) {
 }
 
 function isDirectInsideRootOrTheme(decl) {
-  const parent = decl.parent;
-  if (!parent) return false;
-  if (parent.type === "atrule" && parent.name.toLowerCase() === "theme") {
-    return true;
-  }
-  if (parent.type === "rule" && parent.selector.split(",").some((s) => s.trim() === ":root")) {
-    for (let anc = parent.parent; anc; anc = anc.parent) {
-      if (anc.type === "rule") return false;
+  // :root 内の @media / @supports 等のアトルールは通過し、直近の囲みルールが :root（または @theme）かを見る
+  let cur = decl.parent;
+  while (cur) {
+    if (cur.type === "atrule") {
+      if (cur.name.toLowerCase() === "theme") return true;
+      cur = cur.parent;
+      continue;
     }
-    return true;
+    if (cur.type === "rule") {
+      if (!cur.selector.split(",").some((s) => s.trim() === ":root")) {
+        return false;
+      }
+      for (let anc = cur.parent; anc; anc = anc.parent) {
+        if (anc.type === "rule") return false;
+      }
+      return true;
+    }
+    return false;
   }
   return false;
 }
@@ -256,7 +272,7 @@ function isStrictHoverHoverMediaQuery(params) {
       if (isMediaQueryInvalid(q)) return false;
       if (isMediaQueryWithType(q)) {
         const isNegated = (q.modifier ?? []).some((t) => t[4]?.value?.toLowerCase() === "not");
-        return !isNegated && mediaNodeGuaranteesHoverHover(q.condition);
+        return !isNegated && mediaNodeGuaranteesHoverHover(q.media);
       }
       if (isMediaQueryWithoutType(q)) {
         return mediaNodeGuaranteesHoverHover(q.media);
@@ -283,6 +299,14 @@ function containsHoverPseudo(container) {
   return false;
 }
 
+function maskNonPseudoHoverTokens(node) {
+  if (node.raws?.value && /hover/i.test(node.raws.value)) {
+    node.raws.value = node.raws.value.replace(/:hover/gi, (m) => `${m[0]}h0ver`);
+  } else if (node.value && /hover/i.test(node.value)) {
+    node.value = node.value.replace(/:hover/gi, (m) => `${m[0]}h0ver`);
+  }
+}
+
 function normalizeHoverSelector(selector) {
   if (!/hover/i.test(selector)) return { selector, hasHoverPseudo: false };
   try {
@@ -291,12 +315,8 @@ function normalizeHoverSelector(selector) {
 
     function walkSel(container) {
       for (const node of container.nodes ?? []) {
-        if (node.type === "attribute") {
-          if (node.raws?.value && /hover/i.test(node.raws.value)) {
-            node.raws.value = node.raws.value.replace(/:hover/gi, (m) => `${m[0]}h0ver`);
-          } else if (node.value && /hover/i.test(node.value)) {
-            node.value = node.value.replace(/:hover/gi, (m) => `${m[0]}h0ver`);
-          }
+        if (node.type === "attribute" || node.type === "class" || node.type === "id") {
+          maskNonPseudoHoverTokens(node);
           continue;
         }
         if (node.type === "pseudo" && node.value.toLowerCase() === ":hover") {
@@ -308,8 +328,12 @@ function normalizeHoverSelector(selector) {
     }
     walkSel(ast);
 
+    if (!hasHoverPseudo) {
+      return { selector: selector.replace(/:hover/gi, (m) => `${m[0]}h0ver`), hasHoverPseudo: false };
+    }
+
     // defensive-css/no-accidental-hover が /:not\(([^)]*:hover[^)]*)\)/ でルール全体をスキップするのを防ぐ
-    if (hasHoverPseudo && /:not\([^)]*:hover/i.test(ast.toString())) {
+    if (/:not\([^)]*:hover/i.test(ast.toString())) {
       function maskNotWithHover(container) {
         for (const node of container.nodes ?? []) {
           if (node.type === "pseudo" && node.value.toLowerCase() === ":not" && containsHoverPseudo(node)) {
@@ -420,23 +444,140 @@ function parseFontSizePx(value) {
   return valid.length > 0 ? Math.max(...valid) : null;
 }
 
-function isMobileWidthMediaQuery(params) {
-  const normalized = params.trim().toLowerCase();
-  for (const re of [
-    /\bmax-width\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*(px|rem|em)\b/g,
-    /\bwidth\s*<=\s*([0-9]+(?:\.[0-9]+)?)\s*(px|rem|em)\b/g,
-  ]) {
-    let m;
-    while ((m = re.exec(normalized)) !== null) {
-      const px = Number.parseFloat(m[1]) * (m[2] === "px" ? 1 : 16);
-      if (px >= 480 && px <= 1024) return true;
+function isMobilePxThreshold(numStr, unit) {
+  const px = Number.parseFloat(numStr) * (unit.toLowerCase() === "px" ? 1 : 16);
+  return px >= 480 && px <= 1024;
+}
+
+function mediaNodeMatchesMobileWidth(node) {
+  if (!node) return false;
+  if (isMediaCondition(node) || isMediaInParens(node)) {
+    return mediaNodeMatchesMobileWidth(node.media);
+  }
+  if (isMediaConditionListWithAnd(node) || isMediaConditionListWithOr(node)) {
+    return [node.leading, ...(node.list ?? []).map((item) => item.media)].some(mediaNodeMatchesMobileWidth);
+  }
+  if (isMediaNot(node)) {
+    return false;
+  }
+  if (isMediaFeature(node)) {
+    if (isMediaFeaturePlain(node.feature)) {
+      const name = node.feature.name.getName().toLowerCase();
+      const val = node.feature.value.toString().replace(/\/\*[\s\S]*?\*\//g, "").trim().toLowerCase();
+      const m = /^([0-9]+(?:\.[0-9]+)?)\s*(px|rem|em)$/.exec(val);
+      return name === "max-width" && Boolean(m && isMobilePxThreshold(m[1], m[2]));
+    }
+    if (isMediaFeatureRange(node.feature)) {
+      const text = node.feature.toString().replace(/\/\*[\s\S]*?\*\//g, "").trim().toLowerCase();
+      const m =
+        /\bwidth\s*<=\s*([0-9]+(?:\.[0-9]+)?)\s*(px|rem|em)\b/.exec(text) ||
+        /\b([0-9]+(?:\.[0-9]+)?)\s*(px|rem|em)\s*>=\s*width\b/.exec(text);
+      return Boolean(m && isMobilePxThreshold(m[1], m[2]));
     }
   }
   return false;
 }
 
+function isMobileWidthMediaQuery(params) {
+  try {
+    const queries = parseMediaQueryList(params);
+    return queries.some((q) => {
+      if (isMediaQueryInvalid(q)) return false;
+      if (isMediaQueryWithType(q)) {
+        const isNegated = (q.modifier ?? []).some((t) => t[4]?.value?.toLowerCase() === "not");
+        return !isNegated && mediaNodeMatchesMobileWidth(q.media);
+      }
+      if (isMediaQueryWithoutType(q)) {
+        return mediaNodeMatchesMobileWidth(q.media);
+      }
+      return false;
+    });
+  } catch {
+    return false;
+  }
+}
+
 function isZeroLengthToken(token) {
-  return /^0(?:\.0+)?(?:px|rem|em|pt|vh|vw|%)?$/i.test(token);
+  return /^[-+]?(?:0+(?:\.0+)?|\.[0]+)(?:px|rem|em|pt|vh|vw|%)?$/i.test(token);
+}
+
+function isTransparentColorToken(token) {
+  const t = token.trim().toLowerCase();
+  if (t === "transparent") return true;
+  if (/^#0{4}(?:0{4})?$/.test(t)) return true;
+  const rgbaMatch = /^(?:rgba|hsla)\s*\((.+)\)$/.exec(t);
+  if (rgbaMatch) {
+    const parts = rgbaMatch[1].split(/[,/]/).map((s) => s.trim());
+    const alpha = parts[parts.length - 1];
+    if (alpha && /^(?:0+(?:\.0+)?|0+%)$/.test(alpha)) return true;
+  }
+  return false;
+}
+
+function splitTopLevelCommas(str) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < str.length; i += 1) {
+    const ch = str[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")" && depth > 0) depth -= 1;
+    else if (ch === "," && depth === 0) {
+      parts.push(str.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(str.slice(start).trim());
+  return parts.filter(Boolean);
+}
+
+function tokenizeTopLevelSpaces(str) {
+  const tokens = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < str.length; i += 1) {
+    const ch = str[i];
+    if (ch === "(") {
+      if (start === -1) start = i;
+      depth += 1;
+    } else if (ch === ")") {
+      if (depth > 0) depth -= 1;
+    } else if (/\s/.test(ch) && depth === 0) {
+      if (start !== -1) {
+        tokens.push(str.slice(start, i));
+        start = -1;
+      }
+    } else if (start === -1) {
+      start = i;
+    }
+  }
+  if (start !== -1) tokens.push(str.slice(start));
+  return tokens;
+}
+
+function isVisibleBoxShadow(shadowVal) {
+  const v = shadowVal.trim().toLowerCase();
+  if (!v || v === "none") return false;
+  if (/^var\([^)]+\)$/.test(v)) return true;
+
+  for (const layer of splitTopLevelCommas(v)) {
+    if (layer === "none") continue;
+    const tokens = tokenizeTopLevelSpaces(layer);
+    const lengths = [];
+    let hasOpaqueColorOrDefault = true;
+    for (const tok of tokens) {
+      if (tok === "inset") continue;
+      if (/^[-+]?(?:\d|\.\d)/.test(tok) || /^(?:calc|min|max|clamp|var)\(/i.test(tok)) {
+        lengths.push(tok);
+      } else if (isTransparentColorToken(tok)) {
+        hasOpaqueColorOrDefault = false;
+      }
+    }
+    if (hasOpaqueColorOrDefault && lengths.some((len) => !isZeroLengthToken(len))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 const OUTLINE_STYLES = new Set([
@@ -445,18 +586,26 @@ const OUTLINE_STYLES = new Set([
 const OUTLINE_WIDTH_KEYWORDS = new Set(["thin", "medium", "thick"]);
 
 function parseOutlineShorthand(val) {
-  const tokens = val.split(/\s+/).filter(Boolean);
+  const tokens = tokenizeTopLevelSpaces(val);
   let style = "none";
   let width = "medium";
   let color = "currentcolor";
+  let hasVarToken = false;
   for (const tok of tokens) {
     if (OUTLINE_STYLES.has(tok)) {
       style = tok;
-    } else if (OUTLINE_WIDTH_KEYWORDS.has(tok) || /^[0-9.]/.test(tok)) {
+    } else if (OUTLINE_WIDTH_KEYWORDS.has(tok) || /^[-+]?(?:\d|\.\d)/.test(tok)) {
       width = tok;
+    } else if (/^var\(/i.test(tok)) {
+      hasVarToken = true;
+      color = tok;
     } else {
       color = tok;
     }
+  }
+  // `outline: var(--focus-ring)` のように複合トークン全体を CSS 変数で与える場合は有効な outline とみなす
+  if (hasVarToken && style === "none" && !tokens.includes("none") && !tokens.includes("hidden") && !tokens.some(isZeroLengthToken)) {
+    style = "solid";
   }
   return { style, width, color };
 }
@@ -522,8 +671,7 @@ function evaluateFocusRuleState(decls) {
     (widthVal === undefined || !isZeroLengthToken(widthVal)) &&
     colorVal !== "transparent";
 
-  const hasVisibleBoxShadow =
-    Boolean(shadowVal) && shadowVal !== "none" && !isZeroLengthToken(shadowVal);
+  const hasVisibleBoxShadow = Boolean(shadowVal) && isVisibleBoxShadow(shadowVal);
 
   return {
     isSuppressed,
@@ -531,7 +679,60 @@ function evaluateFocusRuleState(decls) {
   };
 }
 
-function collectSubjectFormTags(selectorNode, targetSet) {
+function classifyFocusSelector(selector) {
+  if (!/focus/i.test(selector)) {
+    return { hasFocusNotVisible: false, hasFocusVisible: false };
+  }
+  try {
+    const ast = selectorParser().astSync(selector);
+    let hasFocusNotVisible = false;
+    let hasFocusVisible = false;
+
+    ast.each((sel) => {
+      let hasFocus = false;
+      let hasNotFocusVisible = false;
+      let hasDirectFocusVisible = false;
+
+      function walkBranch(container, insideNot) {
+        for (const node of container.nodes ?? []) {
+          if (node.type === "attribute") continue;
+          if (node.type === "pseudo") {
+            const pv = node.value.toLowerCase();
+            if (pv === ":not") {
+              if (
+                (node.nodes ?? []).some((inner) =>
+                  (inner.nodes ?? []).some(
+                    (n) => n.type === "pseudo" && n.value.toLowerCase() === ":focus-visible",
+                  ),
+                )
+              ) {
+                hasNotFocusVisible = true;
+              }
+              walkBranch(node, true);
+              continue;
+            }
+            if (!insideNot && pv === ":focus") hasFocus = true;
+            if (!insideNot && pv === ":focus-visible") hasDirectFocusVisible = true;
+          }
+          if (node.nodes) walkBranch(node, insideNot);
+        }
+      }
+      walkBranch(sel, false);
+
+      if (hasFocus && hasNotFocusVisible) hasFocusNotVisible = true;
+      if (hasDirectFocusVisible) hasFocusVisible = true;
+    });
+
+    return { hasFocusNotVisible, hasFocusVisible };
+  } catch {
+    return {
+      hasFocusNotVisible: /:focus\s*:not\(\s*:focus-visible\s*\)/i.test(selector),
+      hasFocusVisible: /:focus-visible\b/i.test(selector.replace(/:not\(\s*:focus-visible\s*\)/gi, "")),
+    };
+  }
+}
+
+function collectSubjectFormTags(selectorNode, results) {
   const nodes = selectorNode.nodes ?? [];
   let lastComb = -1;
   for (let i = 0; i < nodes.length; i += 1) {
@@ -541,57 +742,93 @@ function collectSubjectFormTags(selectorNode, targetSet) {
   if (subject.some((n) => n.type === "pseudo" && n.value.startsWith("::"))) {
     return;
   }
+  const isQualified = subject.some(
+    (n) => n.type === "class" || n.type === "id" || n.type === "attribute",
+  );
   for (const n of subject) {
     if (n.type === "tag") {
       const tag = n.value.toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") {
-        targetSet.add(tag);
+        results.push({ tag, isQualified });
       }
     } else if (n.type === "pseudo" && (n.value === ":is" || n.value === ":where")) {
       for (const inner of n.nodes ?? []) {
-        collectSubjectFormTags(inner, targetSet);
+        collectSubjectFormTags(inner, results);
       }
     }
   }
 }
 
+function updateCascadeFlag(map, selectorKey, ok, important) {
+  const cur = map.get(selectorKey);
+  if (!cur || important || !cur.important) {
+    map.set(selectorKey, { ok, important });
+  }
+}
+
 function checkEntryCssGuardrails(root, file) {
-  const definedVars = new Set();
+  const varStates = new Map();
+  const tapHighlightStates = new Map();
+  const userSelectStates = new Map();
+  const touchActionStates = new Map();
   const flags = {
-    tapHighlight: false,
     focusSuppression: false,
     focusVisible: false,
-    userSelectNone: false,
-    touchActionManipulation: false,
   };
-  const mobileFormFontSizes = { input: false, textarea: false, select: false };
+  const mobileFormStates = {
+    input: { ok: false, important: false },
+    textarea: { ok: false, important: false },
+    select: { ok: false, important: false },
+  };
 
   root.walkDecls((decl) => {
-    const prop = decl.prop.toLowerCase();
     const val = decl.value.replace(/!important/gi, "").trim().toLowerCase();
-    if (decl.prop.startsWith("--") && val.length > 0 && isDirectInsideRootOrTheme(decl)) {
-      definedVars.add(decl.prop);
+    if (decl.prop.startsWith("--") && isDirectInsideRootOrTheme(decl)) {
+      const imp = Boolean(decl.important);
+      const cur = varStates.get(decl.prop);
+      if (!cur || imp || !cur.important) {
+        varStates.set(decl.prop, { valid: val.length > 0, important: imp });
+      }
     }
-    if (
-      prop === "-webkit-tap-highlight-color" &&
-      (val === "transparent" || /^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$/.test(val))
-    ) {
-      flags.tapHighlight = true;
-    }
-    if (prop === "user-select" && val === "none") flags.userSelectNone = true;
-    if (prop === "touch-action" && val === "manipulation") flags.touchActionManipulation = true;
   });
 
   root.walkRules((rule) => {
     const decls = (rule.nodes ?? []).filter((n) => n.type === "decl");
-    const focusState = evaluateFocusRuleState(decls);
+    const selectorParts = rule.selector.split(",").map((s) => s.trim()).filter(Boolean);
 
-    if (/:focus\s*:not\(\s*:focus-visible\s*\)/i.test(rule.selector) && focusState.isSuppressed) {
+    const applyPropCascade = (propName, isValidVal, stateMap) => {
+      let winVal = null;
+      let winImp = false;
+      for (const d of decls) {
+        if (d.prop.toLowerCase() !== propName) continue;
+        const imp = Boolean(d.important);
+        if (winVal === null || imp || !winImp) {
+          winVal = d.value.replace(/!important/gi, "").trim().toLowerCase();
+          winImp = imp;
+        }
+      }
+      if (winVal !== null) {
+        const ok = isValidVal(winVal);
+        for (const selPart of selectorParts) {
+          updateCascadeFlag(stateMap, selPart, ok, winImp);
+        }
+      }
+    };
+
+    applyPropCascade(
+      "-webkit-tap-highlight-color",
+      (v) => v === "transparent" || /^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$/.test(v),
+      tapHighlightStates,
+    );
+    applyPropCascade("user-select", (v) => v === "none", userSelectStates);
+    applyPropCascade("touch-action", (v) => v === "manipulation", touchActionStates);
+
+    const focusState = evaluateFocusRuleState(decls);
+    const { hasFocusNotVisible, hasFocusVisible } = classifyFocusSelector(rule.selector);
+    if (hasFocusNotVisible && focusState.isSuppressed) {
       flags.focusSuppression = true;
     }
-
-    const withoutNot = rule.selector.replace(/:not\(\s*:focus-visible\s*\)/gi, "");
-    if (/:focus-visible\b/i.test(withoutNot) && focusState.hasVisibleFocus) {
+    if (hasFocusVisible && focusState.hasVisibleFocus) {
       flags.focusVisible = true;
     }
   });
@@ -611,18 +848,30 @@ function checkEntryCssGuardrails(root, file) {
       }
       if (!winningFontSize) return;
       const px = parseFontSizePx(winningFontSize);
-      if (px === null || px < 16) return;
+      if (px === null) return;
 
       try {
         const ast = selectorParser().astSync(rule.selector);
-        const matched = new Set();
+        const matched = [];
         ast.each((sel) => collectSubjectFormTags(sel, matched));
-        for (const tag of matched) mobileFormFontSizes[tag] = true;
+        const ok = px >= 16;
+        for (const { tag, isQualified } of matched) {
+          if (!ok && isQualified) continue;
+          const cur = mobileFormStates[tag];
+          if (winningImportant || !cur.important) {
+            mobileFormStates[tag] = { ok, important: winningImportant };
+          }
+        }
       } catch {
         // 構文異常セレクタは無視
       }
     });
   });
+
+  const definedVars = new Set(
+    [...varStates.entries()].filter(([, info]) => info.valid).map(([name]) => name),
+  );
+  const hasAnyOk = (stateMap) => [...stateMap.values()].some((s) => s.ok);
 
   const messages = [];
   const missingVars = REQUIRED_CSS_VARS.filter((v) => !definedVars.has(v));
@@ -630,18 +879,18 @@ function checkEntryCssGuardrails(root, file) {
     messages.push(`エントリ CSS に必須 CSS 変数が不足している: ${missingVars.join(", ")}`);
   }
 
-  const requiredFlags = [
-    ["tapHighlight", "エントリ CSS に '-webkit-tap-highlight-color: transparent' が定義されていない。"],
-    ["focusSuppression", "エントリ CSS に ':focus:not(:focus-visible)' でのアウトライン抑止（outline: none / 0）が定義されていない。"],
-    ["focusVisible", "エントリ CSS に ':focus-visible' のフォーカス表示定義が不足している。"],
-    ["userSelectNone", "エントリ CSS に 'user-select: none' が定義されていない。"],
-    ["touchActionManipulation", "エントリ CSS に 'touch-action: manipulation' が定義されていない。"],
+  const requiredChecks = [
+    [hasAnyOk(tapHighlightStates), "エントリ CSS に '-webkit-tap-highlight-color: transparent' が定義されていない。"],
+    [flags.focusSuppression, "エントリ CSS に ':focus:not(:focus-visible)' でのアウトライン抑止（outline: none / 0）が定義されていない。"],
+    [flags.focusVisible, "エントリ CSS に ':focus-visible' のフォーカス表示定義が不足している。"],
+    [hasAnyOk(userSelectStates), "エントリ CSS に 'user-select: none' が定義されていない。"],
+    [hasAnyOk(touchActionStates), "エントリ CSS に 'touch-action: manipulation' が定義されていない。"],
   ];
-  for (const [key, msg] of requiredFlags) {
-    if (!flags[key]) messages.push(msg);
+  for (const [passed, msg] of requiredChecks) {
+    if (!passed) messages.push(msg);
   }
 
-  const missingMobile = ["input", "textarea", "select"].filter((tag) => !mobileFormFontSizes[tag]);
+  const missingMobile = ["input", "textarea", "select"].filter((tag) => !mobileFormStates[tag].ok);
   if (missingMobile.length > 0) {
     messages.push(
       `エントリ CSS のモバイル幅メディアクエリ（例: @media (max-width: 768px)）内に ${missingMobile.join(", ")} の 'font-size: 16px' 以上が定義されていない（iOS Safari 自動ズーム防止）。`,

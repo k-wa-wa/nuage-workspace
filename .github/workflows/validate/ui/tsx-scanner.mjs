@@ -131,7 +131,13 @@ function getScriptKind(filePath) {
 
 function extractStyleFromExpression(expr, sourceFile, sourceText, styleBlocks, commentLines, visitExpr) {
   if (!expr) return;
-  if (ts.isParenthesizedExpression(expr)) {
+  if (
+    ts.isParenthesizedExpression(expr) ||
+    ts.isAsExpression(expr) ||
+    ts.isTypeAssertionExpression(expr) ||
+    ts.isSatisfiesExpression(expr) ||
+    ts.isNonNullExpression(expr)
+  ) {
     extractStyleFromExpression(expr.expression, sourceFile, sourceText, styleBlocks, commentLines, visitExpr);
     return;
   }

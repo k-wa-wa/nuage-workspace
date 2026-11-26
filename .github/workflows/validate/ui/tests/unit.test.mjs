@@ -631,4 +631,95 @@ export function TemplateComment() {
     const resValid = await runUiLint({ targetDir: dirValid, entryCss: "app/globals.css" });
     assert.equal(resValid.violations.length, 0);
   });
+
+  it("handles media types in hover queries, escaped class names, nested :root @media, and typed <style> expressions", async () => {
+    const dir = createTempProject({
+      "app/globals.css": createValidEntryCss(`
+@media screen and (hover: hover) {
+  .ok-screen:hover { opacity: 0.9; }
+}
+@media only screen and (hover: hover) {
+  .ok-only:hover { opacity: 0.9; }
+}
+@media not screen and (hover: hover) {
+  .bad-not-screen:hover { opacity: 0.8; }
+}
+.hover\\:hovered { opacity: 1; }
+`)
+        .replace(
+          "  --bg: #191816;\n",
+          "  --bg: #191816;\n  --focus-ring: 2px solid currentColor;\n  @media (prefers-contrast: more) { --bg: #000; }\n",
+        )
+        .replace("  outline: 2px solid var(--accent);\n", "  outline: var(--focus-ring);\n"),
+      "components/TypedStyle.tsx": `
+export function TypedStyle() {
+  return (
+    <>
+      <style>{"a:hover { opacity: 0.8; }" as const}</style>
+      <style>{("b:hover { opacity: 0.8; }") satisfies string}</style>
+    </>
+  );
+}
+`,
+    });
+
+    const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
+    assert.deepEqual(
+      res.violations.map((v) => [v.file, v.rule]),
+      [
+        ["app/globals.css", "defensive-css/no-accidental-hover"],
+        ["components/TypedStyle.tsx", "defensive-css/no-accidental-hover"],
+        ["components/TypedStyle.tsx", "defensive-css/no-accidental-hover"],
+      ],
+    );
+  });
+
+  it("rejects negated mobile media, cross-rule mobile overrides, invisible box-shadow, attribute focus-visible, and invalidated declarations", async () => {
+    const css = createValidEntryCss(`
+@media (max-width: 768px) {
+  input { font-size: 12px; }
+}
+`)
+      .replace("  --bg: #191816;\n", "  --bg: #191816;\n  --bg: ;\n")
+      .replace("button:focus-visible {\n  outline: 2px solid var(--accent);\n}", "[data-state=\":focus-visible\"] {\n  box-shadow: 0 0 0 transparent;\n}")
+      .replace("  touch-action: manipulation;\n", "  touch-action: manipulation;\n  touch-action: auto;\n")
+      .replace("@media (max-width: 768px) {", "@media not (max-width: 768px) {");
+
+    const dir = createTempProject({ "app/globals.css": css });
+    const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
+    const msgs = res.violations.map((v) => v.message).join("\n");
+    assert.match(msgs, /必須 CSS 変数が不足している: --bg/);
+    assert.match(msgs, /:focus-visible/);
+    assert.match(msgs, /touch-action: manipulation/);
+    assert.match(msgs, /input, textarea, select/);
+
+    const overrideDir = createTempProject({
+      "app/globals.css": createValidEntryCss(`
+@media (max-width: 768px) {
+  input { font-size: 12px; }
+}
+`),
+    });
+    const resOverride = await runUiLint({ targetDir: overrideDir, entryCss: "app/globals.css" });
+    assert.equal(resOverride.violations.length, 1);
+    assert.match(resOverride.violations[0].message, /内に input の 'font-size: 16px' 以上が定義されていない/);
+  });
+
+  it("matches explicit dot-dir globs without colliding with literal __dot__ patterns", async () => {
+    const dir = createTempProject({
+      "app/globals.css": createValidEntryCss(),
+      ".config/.sub/a.ts": `export const a = "#fff";`,
+      ".hidden/a.ts": `export const b = "#fff";`,
+    });
+
+    const res = await runUiLint({
+      targetDir: dir,
+      entryCss: "app/globals.css",
+      excludes: [".config/**/*.ts", "__dot__hidden/*.ts"],
+    });
+    assert.deepEqual(
+      res.violations.map((v) => v.file),
+      [".hidden/a.ts"],
+    );
+  });
 });
