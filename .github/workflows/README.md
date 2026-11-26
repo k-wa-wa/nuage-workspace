@@ -32,7 +32,7 @@ jobs:
 
 ### `k8s-validate.yml`
 
-`targets` に渡した対象（Kustomize ディレクトリ、`kustomization.yaml(.yml)` / `Kustomization`、単体 YAML ファイル、非 Kustomize フォルダ、glob パターン）を自動判別し、標準チェック（`kubeconform` / `pluto` / `workload.rego`、および `yamllint-path` 指定時は `yamllint`）を実行する。さらに `prod: true` で `ha.rego`、`preview: true` で `preview.rego` を追加適用できる（`prod` と `preview` の同時指定は不可）。
+`targets` に渡した対象（Kustomize ディレクトリ、`kustomization.yaml(.yml)` / `Kustomization`、単体 YAML ファイル、非 Kustomize フォルダ、glob パターン）を自動判別し、標準チェック（`kubeconform` / `pluto` / `keel.rego` / `resources.rego` / `probes.rego`、および `yamllint-path` 指定時は `yamllint`）を実行する。さらに `prod: true` で `ha.rego`、`preview: true` で `preview.rego` を追加適用できる（`prod` と `preview` の同時指定は不可）。
 
 ```yaml
 permissions:

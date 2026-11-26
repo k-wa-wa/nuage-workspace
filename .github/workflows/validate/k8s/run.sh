@@ -26,7 +26,7 @@ Usage: run.sh [OPTIONS] <target...>
 Kubernetes マニフェストの共通検証（yamllint / kustomize / kubeconform / pluto / conftest）を実行する。
 ターゲットには Kustomize ディレクトリ、kustomization.yaml(.yml) / Kustomization ファイル、単体 YAML ファイル、
 非 Kustomize フォルダ、および glob パターンを自動判別して指定できる。
-既定では標準チェック（common: yamllint + kubeconform + pluto + workload.rego）のみを実行する。
+既定では標準チェック（common: yamllint + kubeconform + pluto + keel.rego / resources.rego / probes.rego）のみを実行する。
 各オプションは環境変数でも指定できる（CLI 引数が優先される）。
 
 Options:

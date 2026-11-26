@@ -2,7 +2,19 @@ package main
 
 import rego.v1
 
-# preview 環境のみで適用するポリシー
+# preview 環境のみで適用する隔離・整合性ポリシー。
+#
+# なぜこのルールが必要か:
+# 1. クラスタ全体および他環境への波及防止:
+#    PR ごとに動的に展開される preview 環境に ClusterRole・CRD・DaemonSet・VMRule 等が紛れ込むと、
+#    他環境やクラスタ全体の設定・監視ルールを上書き・汚染する事故につながるためこれらを禁止する。
+#    また、Ingress に本番ドメイン（.wpcapp.net の非 -pr- ホストや .cluster.wpc）が直書きされると
+#    本番トラフィックを奪取する恐れがあるためブロックする。
+# 2. Argo CD ApplicationSet による動的展開の前提構造保証:
+#    preview ApplicationSet は Namespace 置換および kustomize.namespace による名前空間上書き、
+#    さらに Ingress の spec.rules[0] / spec.tls[0] に対する JSON Patch で PR 毎の環境を構築する。
+#    これらの対象リソース・必須フィールドの存在と RoleBinding の外部 namespace 固定ミスを検証する。
+#    例外的に許可が必要なクラスタリソースには nuage.io/allow-in-preview: "true" を付与する。
 
 # 1. クラスタ全体や他環境に波及するリソースの誤混入禁止
 forbidden_preview_kinds := {

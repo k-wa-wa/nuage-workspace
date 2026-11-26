@@ -515,4 +515,81 @@ if (cd "$EXT_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" bundle >"$PLUTO_DIR_O
 fi
 grep -q "bundle/zz-deprecated.yaml" "$PLUTO_DIR_OUT"
 
+echo "=== Smoke Test 14: Keel third-party deny and :latest warn via run.sh ==="
+PULL_REPO="${TMP_ROOT}/pull-repo"
+mkdir -p "${PULL_REPO}/manifests"
+cat << 'EOF' > "${PULL_REPO}/manifests/keel-third-party.yaml"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keel-third-party
+  annotations:
+    keel.sh/policy: force
+    keel.sh/trigger: poll
+    keel.sh/matchTag: "true"
+    keel.sh/monitorContainers: "web"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keel-third-party
+  template:
+    metadata:
+      labels:
+        app: keel-third-party
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27.0
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+EOF
+
+KEEL_DENY_OUT="${TMP_ROOT}/keel-deny.out"
+if (cd "$PULL_REPO" && env -u GITHUB_STEP_SUMMARY "$RUNNER" manifests/keel-third-party.yaml >"$KEEL_DENY_OUT" 2>&1); then
+  echo "❌ Expected Keel third-party image without Always to fail, but it succeeded." >&2
+  exit 1
+fi
+grep -q "Keel 監視対象" "$KEEL_DENY_OUT"
+
+cat << 'EOF' > "${PULL_REPO}/manifests/latest-warn.yaml"
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: latest-warn-job
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: curlimages/curl:latest
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+EOF
+
+LATEST_WARN_OUT="${TMP_ROOT}/latest-warn.out"
+(
+  cd "$PULL_REPO"
+  env -u GITHUB_STEP_SUMMARY "$RUNNER" manifests/latest-warn.yaml >"$LATEST_WARN_OUT" 2>&1
+)
+grep -q "WARN" "$LATEST_WARN_OUT"
+grep -q "curlimages/curl:latest" "$LATEST_WARN_OUT"
+
 echo "✅ All smoke tests passed."
