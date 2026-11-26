@@ -40,6 +40,8 @@ jobs:
     steps:
       - name: Checkout calling repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Checkout Nuage UI validation rules
         uses: actions/checkout@v4

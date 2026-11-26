@@ -2,7 +2,7 @@
  * Nuage UI 設計標準 Stylelint 設定
  *
  * 【なぜこのルールが必要か】
- * 1. 生カラー直書き禁止（color-no-hex / declaration-property-value-disallowed-list）:
+ * 1. 生カラー直書き禁止（color-no-hex / function-disallowed-list）:
  *    Nuage の UI はダークテーマ専用として設計されており、色・透過率はすべてエントリ CSS の
  *    セマンティックトークン（--bg, --fg, --accent, --accent-subtle 等）へ集約する。
  *    コンポーネントや一般 CSS へ #hex / rgb() / rgba() / hsl() / hsla() を直書きすると、
@@ -24,10 +24,8 @@ export default {
   plugins: [defensiveCss],
   rules: {
     "color-no-hex": true,
-    // rgb()/rgba()/hsl()/hsla() の直書きを禁止しつつ、rgba(var(--accent-rgb), 0.1) 等のトークン経由は許可する
-    "declaration-property-value-disallowed-list": {
-      "/.*/": ["/\\b(?:rgba?|hsla?)\\s*\\(\\s*(?!var\\s*\\()/i"],
-    },
+    // トークン参照（rgba(var(--accent-rgb), 0.1) 等）は前処理でマスクし、生のカラー関数直書きを禁止する
+    "function-disallowed-list": ["rgb", "rgba", "hsl", "hsla"],
     "defensive-css/no-accidental-hover": true,
   },
 };

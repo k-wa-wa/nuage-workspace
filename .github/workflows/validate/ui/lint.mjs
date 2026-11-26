@@ -3,7 +3,7 @@
  * Nuage UI 設計標準の共通 lint エントリポイント
  *
  * 【検証する 3 つのルールと背景】
- * 1. 生カラー直書き禁止（color-no-hex / declaration-property-value-disallowed-list / nuage-ui/no-raw-color）:
+ * 1. 生カラー直書き禁止（color-no-hex / function-disallowed-list / nuage-ui/no-raw-color）:
  *    ダークテーマ専用設計を一貫して保つため、エントリ CSS の :root / @theme 外での
  *    #hex / rgb() / rgba() / hsl() / hsla() 直書きを禁止する（rgba(var(...), ...) 等は許可。
  *    例外は nuage-ui-ignore-color または stylelint-disable-next-line）。
@@ -19,12 +19,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import postcss from "postcss";
+import postcss, { Input } from "postcss";
+import tokenize from "postcss/lib/tokenize";
+import selectorParser from "postcss-selector-parser";
+import valueParser from "postcss-value-parser";
 import stylelint from "stylelint";
 import stylelintConfig from "./stylelint.config.mjs";
 import {
   IGNORE_COLOR_TOKEN,
   IGNORE_HOVER_TOKEN,
+  addCommentLines,
   analyzeScriptFile,
   hasIgnoreComment,
 } from "./tsx-scanner.mjs";
@@ -50,8 +54,15 @@ const DEFAULT_EXCLUDED_FILE_REGEX = /\.(?:test|spec|stories|config)\.[^/]+$|\.d\
 
 const STYLELINT_IGNORE_TOKEN = {
   "color-no-hex": IGNORE_COLOR_TOKEN,
-  "declaration-property-value-disallowed-list": IGNORE_COLOR_TOKEN,
+  "function-disallowed-list": IGNORE_COLOR_TOKEN,
   "defensive-css/no-accidental-hover": IGNORE_HOVER_TOKEN,
+};
+
+const TOKEN_COLOR_FN_ALIAS = {
+  rgb: "vgb",
+  rgba: "vgba",
+  hsl: "vsl",
+  hsla: "vsla",
 };
 
 const toPosix = (p) => p.split(path.sep).join("/");
@@ -66,56 +77,55 @@ function normalizeExcludes(patterns) {
   });
 }
 
-function matchesUserExclude(relPath, excludes, isDir) {
+function matchesUserExclude(relPath, excludes) {
   return excludes.some(({ pattern, hasWildcard }) => {
     if (!hasWildcard) {
       return relPath === pattern || relPath.startsWith(`${pattern}/`);
     }
-    if (isDir) {
-      return path.matchesGlob(relPath, pattern);
-    }
-    return path.matchesGlob(relPath, pattern) ||
-      (!pattern.includes("/") && path.matchesGlob(path.posix.basename(relPath), pattern));
+    return (
+      path.matchesGlob(relPath, pattern) ||
+      (!pattern.includes("/") && path.matchesGlob(path.posix.basename(relPath), pattern))
+    );
   });
 }
 
 function collectTargetFiles(targetDir, rawExcludes) {
   const excludes = normalizeExcludes(rawExcludes);
-  const entries = fs.globSync("**/*.{css,ts,tsx,js,jsx}", {
-    cwd: targetDir,
-    withFileTypes: true,
-    exclude: (entry) => {
-      const isDir = typeof entry !== "string" && entry.isDirectory();
-      const name = typeof entry === "string" ? path.basename(entry) : entry.name;
-      const fullPath = typeof entry === "string"
-        ? path.resolve(targetDir, entry)
-        : path.join(entry.parentPath ?? entry.path ?? targetDir, name);
-      const relPath = toPosix(path.relative(targetDir, fullPath));
-      if (isDir) {
-        return DEFAULT_EXCLUDED_DIRS.has(name) || matchesUserExclude(relPath, excludes, true);
-      }
-      return (
-        (typeof entry !== "string" && entry.isSymbolicLink()) ||
-        DEFAULT_EXCLUDED_FILE_REGEX.test(relPath) ||
-        matchesUserExclude(relPath, excludes, false)
-      );
-    },
-  });
-
   const cssFiles = [];
   const scriptFiles = [];
-  const paths = entries
-    .filter((e) => e.isFile() && !e.isSymbolicLink())
-    .map((e) => path.join(e.parentPath ?? e.path ?? targetDir, e.name))
-    .sort((a, b) => a.localeCompare(b));
 
-  for (const fullPath of paths) {
-    if (fullPath.toLowerCase().endsWith(".css")) {
-      cssFiles.push(fullPath);
-    } else {
-      scriptFiles.push(fullPath);
+  function walk(dirPath) {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const fullPath = path.join(dirPath, entry.name);
+      const relPath = toPosix(path.relative(targetDir, fullPath));
+
+      if (entry.isDirectory()) {
+        if (DEFAULT_EXCLUDED_DIRS.has(entry.name) || matchesUserExclude(relPath, excludes)) {
+          continue;
+        }
+        walk(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) continue;
+      if (DEFAULT_EXCLUDED_FILE_REGEX.test(relPath) || matchesUserExclude(relPath, excludes)) {
+        continue;
+      }
+
+      const ext = path.extname(entry.name).toLowerCase();
+      if (ext === ".css") {
+        cssFiles.push(fullPath);
+      } else if (ext === ".ts" || ext === ".tsx" || ext === ".js" || ext === ".jsx") {
+        scriptFiles.push(fullPath);
+      }
     }
   }
+
+  walk(targetDir);
   return { cssFiles, scriptFiles };
 }
 
@@ -142,22 +152,185 @@ function isInsideRootOrTheme(node) {
   return false;
 }
 
-function maskNonHoverMediaAndUrls(css) {
-  return css
-    .replace(/url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)/gi, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/\(\s*hover\s*:\s*(?!hover\s*\))/gi, "(h0ver:");
+function transformDeclValueForStylelint(rawVal) {
+  const edits = [];
+  valueParser(rawVal).walk((node) => {
+    if (node.type === "comment") {
+      const commentText = rawVal.slice(node.sourceIndex, node.sourceEndIndex);
+      if (!/stylelint-(?:disable|enable)/i.test(commentText)) {
+        edits.push({
+          start: node.sourceIndex,
+          end: node.sourceEndIndex,
+          text: commentText.replace(/[^\n]/g, " "),
+        });
+      }
+      return;
+    }
+    if (node.type !== "function") return;
+    const fn = node.value.toLowerCase();
+    if (fn === "url") {
+      edits.push({
+        start: node.sourceIndex,
+        end: node.sourceEndIndex,
+        text: rawVal.slice(node.sourceIndex, node.sourceEndIndex).replace(/[^\n]/g, " "),
+      });
+      return false;
+    }
+    if (fn in TOKEN_COLOR_FN_ALIAS) {
+      const firstArg = node.nodes.find((n) => n.type !== "space" && n.type !== "comment");
+      if (firstArg && firstArg.type === "function" && firstArg.value.toLowerCase() === "var") {
+        edits.push({
+          start: node.sourceIndex,
+          end: node.sourceIndex + node.value.length,
+          text: TOKEN_COLOR_FN_ALIAS[fn],
+        });
+      }
+    }
+  });
+
+  if (edits.length === 0) return rawVal;
+  edits.sort((a, b) => a.start - b.start);
+  let out = "";
+  let cursor = 0;
+  for (const e of edits) {
+    out += rawVal.slice(cursor, e.start) + e.text;
+    cursor = e.end;
+  }
+  return out + rawVal.slice(cursor);
 }
 
-function maskThemeColorDeclarations(root) {
-  const cloned = root.clone();
-  cloned.walkDecls((decl) => {
-    if (!isInsideRootOrTheme(decl)) return;
-    const rawVal = decl.raws.value?.raw ?? decl.value;
-    const newlines = "\n".repeat((rawVal.match(/\n/g) || []).length);
-    decl.value = `var(--nuage-masked)${newlines}`;
-    decl.raws.value = undefined;
+function maskNonExactHoverMediaParams(params) {
+  const keepRanges = [];
+  const exactRe = /\(\s*hover\s*:\s*hover\s*\)/gi;
+  let m;
+  while ((m = exactRe.exec(params)) !== null) {
+    keepRanges.push([m.index, m.index + m[0].length]);
+  }
+  return params.replace(/hover/gi, (word, offset) => {
+    const inKeep = keepRanges.some(([s, e]) => offset >= s && offset + word.length <= e);
+    return inKeep ? word : `${word[0]}0${word.slice(2)}`;
   });
-  return cloned.toString();
+}
+
+function normalizeHoverSelector(selector) {
+  if (!/hover/i.test(selector)) return selector;
+  try {
+    const ast = selectorParser().astSync(selector);
+    let insideNot = false;
+    function walkSel(container) {
+      for (const node of container.nodes ?? []) {
+        if (node.type === "pseudo" && node.value.toLowerCase() === ":not") {
+          const prev = insideNot;
+          insideNot = true;
+          walkSel(node);
+          insideNot = prev;
+          continue;
+        }
+        if (node.type === "pseudo" && node.value.toLowerCase() === ":hover") {
+          node.value = insideNot ? ":h0ver" : ":hover";
+        }
+        if (node.nodes) walkSel(node);
+      }
+    }
+    walkSel(ast);
+    return ast.toString();
+  } catch {
+    return selector.replace(/:hover(?![a-zA-Z0-9_-])/gi, ":hover");
+  }
+}
+
+function collectCssCommentLines(css) {
+  const cssCommentLines = new Map();
+  try {
+    const input = new Input(css);
+    const tokenizer = tokenize(input, { ignoreErrors: true });
+    while (!tokenizer.endOfFile()) {
+      const tok = tokenizer.nextToken();
+      if (tok[0] === "comment") {
+        const pos = input.fromOffset(tok[2]);
+        if (pos) addCommentLines(cssCommentLines, pos.line, tok[1]);
+      }
+    }
+  } catch {
+    // トークン化不能な場合も Stylelint 本体での検査は継続する
+  }
+  return cssCommentLines;
+}
+
+function preprocessCss(css, { isEntryCss }) {
+  const cssCommentLines = collectCssCommentLines(css);
+  let root;
+  try {
+    root = postcss.parse(css);
+  } catch (err) {
+    if (err?.name === "CssSyntaxError") {
+      return {
+        processedCss: css,
+        guardrailRoot: null,
+        cssCommentLines,
+        ignoredHoverRuleLines: new Set(),
+      };
+    }
+    throw err;
+  }
+
+  const guardrailRoot = isEntryCss ? root.clone() : null;
+  const ignoredHoverRuleLines = new Set();
+
+  root.walkDecls((decl) => {
+    const rawVal = decl.raws.value?.raw ?? decl.value;
+    if (isEntryCss && isInsideRootOrTheme(decl)) {
+      const newlines = "\n".repeat((rawVal.match(/\n/g) || []).length);
+      decl.value = `var(--nuage-masked)${newlines}`;
+      decl.raws.value = undefined;
+      return;
+    }
+    const transformed = transformDeclValueForStylelint(rawVal);
+    if (transformed !== rawVal) {
+      decl.value = transformed;
+      decl.raws.value = undefined;
+    }
+  });
+
+  root.walkAtRules("media", (atRule) => {
+    atRule.params = maskNonExactHoverMediaParams(atRule.params);
+  });
+
+  root.walkRules((rule) => {
+    const normalizedSelector = normalizeHoverSelector(rule.selector);
+    if (normalizedSelector !== rule.selector) {
+      rule.selector = normalizedSelector;
+    }
+    if (!/:hover(?![a-zA-Z0-9_-])/i.test(rule.selector)) return;
+
+    const startLine = rule.source?.start?.line ?? 1;
+    const selectorLines = rule.selector.split("\n").length;
+    let ignored = false;
+    for (let offset = 0; offset < selectorLines; offset += 1) {
+      if (hasIgnoreComment(cssCommentLines, startLine + offset, IGNORE_HOVER_TOKEN)) {
+        ignored = true;
+        break;
+      }
+    }
+    if (!ignored && Array.isArray(rule.nodes)) {
+      for (const child of rule.nodes) {
+        if (child.type === "comment" && child.text.includes(IGNORE_HOVER_TOKEN)) {
+          ignored = true;
+          break;
+        }
+      }
+    }
+    if (ignored) {
+      ignoredHoverRuleLines.add(startLine);
+    }
+  });
+
+  return {
+    processedCss: root.toString(),
+    guardrailRoot,
+    cssCommentLines,
+    ignoredHoverRuleLines,
+  };
 }
 
 function parseFontSizePx(value) {
@@ -186,6 +359,50 @@ function isMobileWidthMediaQuery(params) {
     }
   }
   return false;
+}
+
+function isZeroLengthToken(token) {
+  return /^0(?:\.0+)?(?:px|rem|em|pt|vh|vw|%)?$/i.test(token);
+}
+
+function isEffectiveFocusDecl(prop, rawValue) {
+  const p = prop.toLowerCase();
+  const v = rawValue.replace(/!important/gi, "").trim().toLowerCase();
+  if (!v || v === "none" || v === "hidden" || v === "transparent" || isZeroLengthToken(v)) {
+    return false;
+  }
+  if (p === "outline") {
+    const tokens = v.split(/\s+/);
+    if (tokens.some((t) => t === "none" || t === "hidden" || t === "transparent" || isZeroLengthToken(t))) {
+      return false;
+    }
+    return true;
+  }
+  return p === "outline-style" || p === "outline-color" || p === "box-shadow";
+}
+
+function collectSubjectFormTags(selectorNode, targetSet) {
+  const nodes = selectorNode.nodes ?? [];
+  let lastComb = -1;
+  for (let i = 0; i < nodes.length; i += 1) {
+    if (nodes[i].type === "combinator") lastComb = i;
+  }
+  const subject = nodes.slice(lastComb + 1);
+  if (subject.some((n) => n.type === "pseudo" && n.value.startsWith("::"))) {
+    return;
+  }
+  for (const n of subject) {
+    if (n.type === "tag") {
+      const tag = n.value.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") {
+        targetSet.add(tag);
+      }
+    } else if (n.type === "pseudo" && (n.value === ":is" || n.value === ":where")) {
+      for (const inner of n.nodes ?? []) {
+        collectSubjectFormTags(inner, targetSet);
+      }
+    }
+  }
 }
 
 function checkEntryCssGuardrails(root, file) {
@@ -222,9 +439,9 @@ function checkEntryCssGuardrails(root, file) {
         decls.some((d) => {
           const [p, v] = norm(d);
           return (
-            (p === "outline" && (v === "none" || v === "0" || v === "0px")) ||
+            (p === "outline" && (v === "none" || isZeroLengthToken(v))) ||
             (p === "outline-style" && v === "none") ||
-            (p === "outline-width" && (v === "0" || v === "0px"))
+            (p === "outline-width" && isZeroLengthToken(v))
           );
         })
       ) {
@@ -234,16 +451,7 @@ function checkEntryCssGuardrails(root, file) {
 
     const withoutNot = rule.selector.replace(/:not\(\s*:focus-visible\s*\)/gi, "");
     if (/:focus-visible\b/i.test(withoutNot)) {
-      if (
-        decls.some((d) => {
-          const [p, v] = norm(d);
-          return (
-            (p === "outline" || p === "outline-style" || p === "outline-color" || p === "box-shadow") &&
-            v !== "none" &&
-            v !== "0"
-          );
-        })
-      ) {
+      if (decls.some((d) => isEffectiveFocusDecl(d.prop, d.value))) {
         flags.focusVisible = true;
       }
     }
@@ -258,12 +466,13 @@ function checkEntryCssGuardrails(root, file) {
         return px !== null && px >= 16;
       });
       if (!has16px) return;
-      for (const part of rule.selector.split(",")) {
-        for (const tag of ["input", "textarea", "select"]) {
-          if (new RegExp(`(?:^|[\\s>+~])${tag}(?=$|[:.\\[#\\s>+~])`, "i").test(part.trim())) {
-            mobileFormFontSizes[tag] = true;
-          }
-        }
+      try {
+        const ast = selectorParser().astSync(rule.selector);
+        const matched = new Set();
+        ast.each((sel) => collectSubjectFormTags(sel, matched));
+        for (const tag of matched) mobileFormFontSizes[tag] = true;
+      } catch {
+        // 構文異常セレクタは無視
       }
     });
   });
@@ -301,19 +510,47 @@ function checkEntryCssGuardrails(root, file) {
   }));
 }
 
-async function lintCssWithStylelint(css, lines, relFile, lineOffset = 0) {
+function mergeCommentLines(baseMap, cssMap, lineOffset) {
+  if (lineOffset === 0 && baseMap.size === 0) return cssMap;
+  const merged = new Map(baseMap);
+  for (const [ln, text] of cssMap.entries()) {
+    addCommentLines(merged, lineOffset + ln, text);
+  }
+  return merged;
+}
+
+async function lintCssWithStylelint({
+  css,
+  relFile,
+  isEntryCss = false,
+  scriptCommentLines = new Map(),
+  lineOffset = 0,
+}) {
+  const { processedCss, guardrailRoot, cssCommentLines, ignoredHoverRuleLines } =
+    preprocessCss(css, { isEntryCss });
+
+  const violations = [];
+  if (guardrailRoot) {
+    violations.push(...checkEntryCssGuardrails(guardrailRoot, relFile));
+  }
+
   // 呼び出し元リポジトリの .stylelintignore に影響されないよう、ファイルパスではなく code として渡す
   const result = await stylelint.lint({
-    code: maskNonHoverMediaAndUrls(css),
+    code: processedCss,
     config: stylelintConfig,
   });
 
-  const violations = [];
+  const commentLines = mergeCommentLines(scriptCommentLines, cssCommentLines, lineOffset);
+
   for (const res of result.results) {
     for (const warn of res.warnings) {
-      const mappedLine = lineOffset + (warn.line ?? 1);
+      const localLine = warn.line ?? 1;
+      const mappedLine = lineOffset + localLine;
+      if (warn.rule === "defensive-css/no-accidental-hover" && ignoredHoverRuleLines.has(localLine)) {
+        continue;
+      }
       const ignoreToken = STYLELINT_IGNORE_TOKEN[warn.rule];
-      if (ignoreToken && hasIgnoreComment(lines, mappedLine, ignoreToken)) {
+      if (ignoreToken && hasIgnoreComment(commentLines, mappedLine, ignoreToken)) {
         continue;
       }
       violations.push({
@@ -356,35 +593,40 @@ export async function runUiLint({ targetDir, entryCss = "", excludes = [] }) {
 
   if (entryCssPath) {
     const entryCode = fs.readFileSync(entryCssPath, "utf8");
-    const rel = toRel(entryCssPath);
-    const root = postcss.parse(entryCode);
-    violations.push(...checkEntryCssGuardrails(root, rel));
     violations.push(
-      ...(await lintCssWithStylelint(
-        maskThemeColorDeclarations(root),
-        entryCode.split(/\r?\n/),
-        rel,
-      )),
+      ...(await lintCssWithStylelint({
+        css: entryCode,
+        relFile: toRel(entryCssPath),
+        isEntryCss: true,
+      })),
     );
   }
 
   for (const cssPath of nonEntryCssFiles) {
     const cssCode = fs.readFileSync(cssPath, "utf8");
     violations.push(
-      ...(await lintCssWithStylelint(cssCode, cssCode.split(/\r?\n/), toRel(cssPath))),
+      ...(await lintCssWithStylelint({
+        css: cssCode,
+        relFile: toRel(cssPath),
+      })),
     );
   }
 
   for (const scriptPath of scriptFiles) {
     const content = fs.readFileSync(scriptPath, "utf8");
     const rel = toRel(scriptPath);
-    const { lines, styleBlocks, colorViolations } = analyzeScriptFile(scriptPath, content);
+    const { commentLines, styleBlocks, colorViolations } = analyzeScriptFile(scriptPath, content);
     for (const v of colorViolations) {
       violations.push({ file: rel, ...v });
     }
     for (const block of styleBlocks) {
       violations.push(
-        ...(await lintCssWithStylelint(block.css, lines, rel, block.startLine - 1)),
+        ...(await lintCssWithStylelint({
+          css: block.css,
+          relFile: rel,
+          scriptCommentLines: commentLines,
+          lineOffset: block.startLine - 1,
+        })),
       );
     }
   }

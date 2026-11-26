@@ -106,12 +106,12 @@ describe("raw color prohibition", () => {
       [
         ["app/globals.css", "color-no-hex"],
         ["styles/other.css", "color-no-hex"],
-        ["styles/other.css", "declaration-property-value-disallowed-list"],
+        ["styles/other.css", "function-disallowed-list"],
       ],
     );
   });
 
-  it("detects raw colors in <style>, inline style={{}}, Tailwind arbitrary values, and JS literals while avoiding false positives", async () => {
+  it("detects exact counts and positions in <style>, inline style={{}}, Tailwind arbitrary values, and JS literals while avoiding false positives", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(),
       "components/Sample.tsx": `
@@ -126,8 +126,9 @@ export function Sample({ url, tag }: { url: string; tag: string }) {
   return (
     <div
       className="bg-[#211f1c] text-[rgba(232,228,220,0.9)] border-[#2f2d29] fill-[#fff] stroke-[#000]"
-      style={{ color: "hsl(210, 50%, 50%)", borderColor: "hsla(0, 0%, 100%, 0.2)" }}
+      style={{ color: "hsl(210, 50%, 50%)", borderColor: "hsla(0, 0%, 100%, 0.2)", fill: "url(#fff)" }}
     >
+      <a href="/rgb(1,2,3)">link</a>
       <span>#123</span>
       <style>{\`
         .chip {
@@ -145,18 +146,25 @@ export function Sample({ url, tag }: { url: string; tag: string }) {
     });
 
     const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
-    const lines = res.violations.map((v) => v.line);
-    assert.ok(lines.includes(6));
-    assert.ok(lines.includes(7));
-    assert.ok(lines.includes(12));
-    assert.ok(lines.includes(13));
-    assert.ok(lines.includes(22));
-    assert.ok(!lines.includes(8), "URL fragment should not be flagged");
-    assert.ok(!lines.includes(9), "#vr-video should not be flagged");
-    assert.ok(!lines.includes(15), "JSX text #123 should not be flagged");
+    assert.deepEqual(
+      res.violations.map((v) => [v.line, v.column, v.rule]),
+      [
+        [6, 23, "nuage-ui/no-raw-color"],
+        [7, 30, "nuage-ui/no-raw-color"],
+        [7, 56, "nuage-ui/no-raw-color"],
+        [12, 22, "nuage-ui/no-raw-color"],
+        [12, 37, "nuage-ui/no-raw-color"],
+        [12, 68, "nuage-ui/no-raw-color"],
+        [12, 83, "nuage-ui/no-raw-color"],
+        [12, 97, "nuage-ui/no-raw-color"],
+        [13, 24, "nuage-ui/no-raw-color"],
+        [13, 59, "nuage-ui/no-raw-color"],
+        [23, 25, "color-no-hex"],
+      ],
+    );
   });
 
-  it("supports nuage-ui-ignore-color and stylelint-disable-next-line opt-out", async () => {
+  it("supports nuage-ui-ignore-color and stylelint-disable-next-line opt-out on exact lines only", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(`
 .ignored-inline { color: #fff; /* nuage-ui-ignore-color */ }
@@ -164,6 +172,13 @@ export function Sample({ url, tag }: { url: string; tag: string }) {
 .ignored-prev { color: rgba(0, 0, 0, 0.5); }
 /* stylelint-disable-next-line color-no-hex */
 .ignored-stylelint { color: #abc; }
+.multiline-grad {
+  background: linear-gradient(
+    rgba(255, 0, 0, 0.5), /* nuage-ui-ignore-color */
+    to right,
+    rgb(0, 0, 0)
+  );
+}
 `),
       "app/manifest.ts": `
 export const manifest = {
@@ -178,6 +193,7 @@ export function Box() {
     <>
       {/* nuage-ui-ignore-color */}
       <div className="bg-[#191816]" />
+      <div title="nuage-ui-ignore-color" style={{ color: "#fff" }} />
       <style>{\`
         .ok { color: #fff; /* nuage-ui-ignore-color */ }
       \`}</style>
@@ -188,19 +204,44 @@ export function Box() {
     });
 
     const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
-    assert.equal(res.violations.length, 0);
+    assert.deepEqual(
+      res.violations.map((v) => [v.file, v.line, v.rule]),
+      [
+        ["app/globals.css", 60, "function-disallowed-list"],
+        ["components/Box.tsx", 7, "nuage-ui/no-raw-color"],
+      ],
+    );
   });
 });
 
 describe("defensive-css/no-accidental-hover", () => {
-  it("requires :hover in CSS and <style> to be wrapped inside @media (hover: hover)", async () => {
+  it("requires :hover in CSS and <style> (including uppercase, any-hover, mixed :not(:hover), and conditional JSX) to be wrapped inside @media (hover: hover)", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(`
 .bad:hover {
   opacity: 0.9;
 }
+.upper:HOVER {
+  opacity: 0.9;
+}
+.mixed:hover, .other:not(:hover) {
+  opacity: 0.9;
+}
 @media (hover: none) {
   .wrong-media:hover {
+    opacity: 0.8;
+  }
+}
+@media (
+  hover:
+  none
+) {
+  .wrong-multiline-media:hover {
+    opacity: 0.8;
+  }
+}
+@media (any-hover: none) {
+  .wrong-any-hover:hover {
     opacity: 0.8;
   }
 }
@@ -211,7 +252,7 @@ describe("defensive-css/no-accidental-hover", () => {
 }
 `),
       "components/Card.tsx": `
-export function Card() {
+export function Card({ enabled }: { enabled: boolean }) {
   return (
     <div>
       <style>{\`
@@ -220,6 +261,7 @@ export function Card() {
         }
         .card-bad:hover { border-color: var(--warn); }
       \`}</style>
+      <style>{enabled ? ".cond-bad:hover { opacity: 0.8; }" : ""}</style>
     </div>
   );
 }
@@ -227,20 +269,31 @@ export function Card() {
     });
 
     const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
-    assert.equal(res.violations.length, 3);
-    assert.equal(res.violations[0].file, "app/globals.css");
-    assert.equal(res.violations[1].file, "app/globals.css");
-    assert.equal(res.violations[2].file, "components/Card.tsx");
-    assert.equal(res.violations[2].line, 9);
-    assert.equal(res.violations[2].rule, "defensive-css/no-accidental-hover");
+    assert.deepEqual(
+      res.violations.map((v) => [v.file, v.line, v.rule]),
+      [
+        ["app/globals.css", 51, "defensive-css/no-accidental-hover"],
+        ["app/globals.css", 54, "defensive-css/no-accidental-hover"],
+        ["app/globals.css", 57, "defensive-css/no-accidental-hover"],
+        ["app/globals.css", 61, "defensive-css/no-accidental-hover"],
+        ["app/globals.css", 69, "defensive-css/no-accidental-hover"],
+        ["app/globals.css", 74, "defensive-css/no-accidental-hover"],
+        ["components/Card.tsx", 9, "defensive-css/no-accidental-hover"],
+        ["components/Card.tsx", 11, "defensive-css/no-accidental-hover"],
+      ],
+    );
   });
 
-  it("supports nuage-ui-ignore-hover and stylelint-disable-next-line opt-out", async () => {
+  it("supports nuage-ui-ignore-hover (including inside rule block) and stylelint-disable-next-line opt-out", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(`
 /* nuage-ui-ignore-hover */
 .ignored-prev:hover { opacity: 0.8; }
 .ignored-same:hover { /* nuage-ui-ignore-hover */
+  opacity: 0.8;
+}
+.ignored-inside:hover {
+  /* nuage-ui-ignore-hover */
   opacity: 0.8;
 }
 /* stylelint-disable-next-line defensive-css/no-accidental-hover */
@@ -269,17 +322,17 @@ export function Button() {
 });
 
 describe("nuage-ui/entry-css-guardrails", () => {
-  it("detects missing tokens, accessibility rules, and mobile font-size < 16px", async () => {
+  it("detects missing tokens, invalid focus-visible (outline: 0px), and non-subject mobile selectors", async () => {
     const dir = createTempProject({
       "app/globals.css": `
 :root {
   --bg: #191816;
 }
+button:focus-visible {
+  outline: 0px;
+}
 @media (max-width: 768px) {
-  input, textarea {
-    font-size: 14px;
-  }
-  select {
+  input + div, textarea + div, select + div {
     font-size: 16px;
   }
 }
@@ -295,7 +348,7 @@ describe("nuage-ui/entry-css-guardrails", () => {
     assert.match(messages, /:focus-visible/);
     assert.match(messages, /user-select: none/);
     assert.match(messages, /touch-action: manipulation/);
-    assert.match(messages, /input, textarea/);
+    assert.match(messages, /input, textarea, select/);
   });
 
   it("accepts 1rem inside @media (max-width: 640px)", async () => {
@@ -309,18 +362,20 @@ describe("nuage-ui/entry-css-guardrails", () => {
   });
 });
 
-describe("exclude handling", () => {
-  it("excludes default directories/suffixes and custom --exclude patterns", async () => {
+describe("exclude and file discovery handling", () => {
+  it("scans hidden directories and uppercase extensions while excluding default and directory-glob patterns", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(),
+      ".agents/skills/gen.ts": `export const c = "#fff";`,
+      "components/Upper.TSX": `export const c = "#fff";`,
+      "styles/Upper.CSS": `.u { color: #fff; }`,
       "components/Button.test.tsx": `export const x = "#fff";`,
       "components/Button.stories.tsx": `export const x = "#fff";`,
       "e2e/home.spec.ts": `export const x = "#fff";`,
       "mocks/handlers.ts": `export const x = "#fff";`,
       ".storybook/preview.tsx": `export const x = "#fff";`,
       "vite.config.ts": `export const x = "#fff";`,
-      "legacy/old.tsx": `export const x = "#fff";`,
-      "generated/foo.gen.tsx": `export const x = "#fff";`,
+      "src/generated-v2/old.tsx": `export const x = "#fff";`,
     });
 
     const resWithDefaultOnly = await runUiLint({
@@ -329,13 +384,18 @@ describe("exclude handling", () => {
     });
     assert.deepEqual(
       resWithDefaultOnly.violations.map((v) => v.file),
-      ["generated/foo.gen.tsx", "legacy/old.tsx"],
+      [
+        ".agents/skills/gen.ts",
+        "components/Upper.TSX",
+        "src/generated-v2/old.tsx",
+        "styles/Upper.CSS",
+      ],
     );
 
     const resWithExclude = await runUiLint({
       targetDir: dir,
       entryCss: "app/globals.css",
-      excludes: ["legacy", "*.gen.tsx"],
+      excludes: ["generated-*", ".agents", "*.TSX", "*.CSS"],
     });
     assert.equal(resWithExclude.violations.length, 0);
   });
@@ -360,15 +420,24 @@ describe("review regression guards", () => {
     }
   });
 
-  it("detects raw colors inside <style> ${...} expressions and skips token-backed rgba(var()) / non-color hex", async () => {
+  it("handles token-backed rgba with whitespace/newlines, string url( in content, and syntax errors in entry CSS", async () => {
     const dir = createTempProject({
       "app/globals.css": createValidEntryCss(`
 .token-alpha {
-  background: rgba(var(--accent-rgb), 0.5);
-  color: hsl(var(--fg-hsl));
+  background: rgba( var(--accent-rgb), 0.1 );
+  border-color: rgba(
+    var(--accent-rgb),
+    0.5
+  );
+  color: hsl( var(--fg-hsl) );
 }
 .raw-rgb-var-alpha {
   color: rgba(255, 0, 0, var(--alpha));
+}
+.string-url-parens {
+  content: "url(";
+  color: #fff;
+  --text: ")";
 }
 `),
       "components/Dynamic.tsx": `
@@ -393,10 +462,27 @@ export function Dynamic({ on }: { on: boolean }) {
     assert.deepEqual(
       res.violations.map((v) => [v.file, v.line, v.rule]),
       [
-        ["app/globals.css", 56, "declaration-property-value-disallowed-list"],
+        ["app/globals.css", 60, "function-disallowed-list"],
+        ["app/globals.css", 64, "color-no-hex"],
         ["components/Dynamic.tsx", 9, "nuage-ui/no-raw-color"],
         ["components/Dynamic.tsx", 11, "nuage-ui/no-raw-color"],
         ["components/Dynamic.tsx", 11, "nuage-ui/no-raw-color"],
+      ],
+    );
+  });
+
+  it("reports CssSyntaxError in entry CSS without aborting other files", async () => {
+    const dir = createTempProject({
+      "app/globals.css": `:root { --bg: #191816;`,
+      "components/Bad.tsx": `export const x = "#fff";\n`,
+    });
+
+    const res = await runUiLint({ targetDir: dir, entryCss: "app/globals.css" });
+    assert.deepEqual(
+      res.violations.map((v) => [v.file, v.rule]),
+      [
+        ["app/globals.css", "CssSyntaxError"],
+        ["components/Bad.tsx", "nuage-ui/no-raw-color"],
       ],
     );
   });

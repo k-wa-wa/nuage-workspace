@@ -129,6 +129,8 @@ jobs:
 
 #### ローカル実行
 
+動作要件として **Node.js 22.5 以上**（`path.matchesGlob` 対応）が必要である。
+
 ```bash
 LOCAL_RUNNER="${HOME}/ghq/github.com/k-wa-wa/nuage-workspace/.github/workflows/validate/ui/run.sh"
 if [ -x "$LOCAL_RUNNER" ]; then

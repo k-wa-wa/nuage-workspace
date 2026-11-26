@@ -34,7 +34,7 @@ Usage: run.sh [OPTIONS] [target-dir]
 
 Nuage UI 設計標準の共通検証（生カラー禁止・:hover ガード・エントリ CSS 必須トークン/ガードレール）を実行する。
 既定で *.test.*, *.spec.*, *.stories.*, *.config.*, *.d.ts, e2e/, mocks/, public/, .storybook/, node_modules/, .next/, dist/ 等を除外する。
-各オプションは環境変数でも指定できる（CLI 引数が優先される）。
+動作要件: Node.js >= 22.5.0。各オプションは環境変数でも指定できる（CLI 引数が優先される）。
 
 Options:
   --target-dir <dir>         検証対象ディレクトリ（位置引数でも指定可 / TARGET_DIR）
@@ -122,11 +122,17 @@ check_required_commands() {
     echo "❌ Missing required command(s): node" >&2
     exit 1
   fi
+  if ! node -e 'const path = require("node:path"); const [maj, min] = process.versions.node.split(".").map(Number); if (maj < 22 || (maj === 22 && min < 5) || typeof path.matchesGlob !== "function") process.exit(1);' 2>/dev/null; then
+    echo "❌ Node.js >= 22.5.0 is required (current: $(node -v))." >&2
+    exit 1
+  fi
 }
 
 ensure_dependencies() {
   if [ -d "${SCRIPT_DIR}/node_modules/stylelint" ] && \
      [ -d "${SCRIPT_DIR}/node_modules/stylelint-plugin-defensive-css" ] && \
+     [ -d "${SCRIPT_DIR}/node_modules/postcss-selector-parser" ] && \
+     [ -d "${SCRIPT_DIR}/node_modules/postcss-value-parser" ] && \
      [ -d "${SCRIPT_DIR}/node_modules/typescript" ]; then
     return 0
   fi
