@@ -2,6 +2,8 @@
 
 各リポジトリから `workflow_call` で呼び出す共通 Reusable Workflow 群である。詳細な入力パラメータや検証ルールは各ワークフロー定義および [validate/k8s/](validate/k8s/)・[validate/ui/](validate/ui/) を参照すること。
 
+なお、Go バックエンドの設計標準と各モジュール内の `go test ./...` による依存方向検査については [docs/backend-architecture.md](../../docs/backend-architecture.md) を参照すること。
+
 ## 一覧
 
 | ファイル | 役割 |
