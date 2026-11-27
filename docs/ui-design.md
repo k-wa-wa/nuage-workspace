@@ -146,7 +146,7 @@ Nuage の UI は**ダークテーマ専用**とし、ライトモードは原則
 
 ### 機械検証（`ui-validate.yml`）とレビュー確認の役割分担
 
-`.css` の生カラー・`:hover` および TSX / JSX の `style={{ ... }}` / Tailwind 任意値の生カラーは、共通 Reusable Workflow の [ui-validate.yml](../.github/workflows/ui-validate.yml)（実装: [.github/workflows/validate/ui/](../.github/workflows/validate/ui/)）で機械検証する（各ルールの背景とオプトアウト方法は [stylelint.config.mjs](../.github/workflows/validate/ui/stylelint.config.mjs) および [lint.mjs](../.github/workflows/validate/ui/lint.mjs) を参照）。
+`.css` の生カラー・`:hover` および TSX / JSX の `style={{ ... }}` / Tailwind 任意値の生カラーは、共通 Reusable Workflow の [ui-validate.yml](../.github/workflows/ui-validate.yml)（実装: [.github/workflows/validate/ui/](../.github/workflows/validate/ui/)）で機械検証する（各ルールの背景とオプトアウト方法は [stylelint.config.mjs](../.github/workflows/validate/ui/stylelint.config.mjs) および [check-tsx-colors.mjs](../.github/workflows/validate/ui/check-tsx-colors.mjs) を参照）。
 
 その他（エントリ CSS 基盤のトークン・ガードレール、`<style>{...}</style>` ブロック、JS 設定オブジェクト内の色リテラル、4px / 8px グリッドや定性的なデザイン原則）は、本ドキュメントのガイドラインとして AI レビューおよびコードレビューで確認する。
 

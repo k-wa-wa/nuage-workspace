@@ -63,9 +63,14 @@ jobs:
         run: npm ci --prefix .nuage-workspace-policies/.github/workflows/validate/ui
 
       - name: Run UI validation
+        continue-on-error: ${{ !inputs.fail-on-policy }}
         env:
-          TARGET_DIR: ${{ inputs.target-dir }}
           ENTRY_CSS: ${{ inputs.entry-css }}
           EXCLUDE: ${{ inputs.exclude }}
-          FAIL_ON_POLICY: ${{ inputs.fail-on-policy }}
-        run: .nuage-workspace-policies/.github/workflows/validate/ui/run.sh
+        run: |
+          UI_DIR="$PWD/.nuage-workspace-policies/.github/workflows/validate/ui"
+          cd "${{ inputs.target-dir }}"
+          rc=0
+          "${UI_DIR}/node_modules/.bin/stylelint" "**/*.css" --config "${UI_DIR}/stylelint.config.mjs" --allow-empty-input || rc=$?
+          node "${UI_DIR}/check-tsx-colors.mjs" || rc=$?
+          exit "$rc"

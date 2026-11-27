@@ -1,36 +1,41 @@
 /**
  * Nuage UI 設計標準 Stylelint 設定
- *
- * 1. 生カラー直書き禁止（color-no-hex / color-named / function-disallowed-list）:
- *    ダークテーマ専用設計を一貫して保つため、一般 CSS での #hex・名前付きカラー・
- *    rgb()/rgba()/hsl()/hsla() 直書きを禁止し、エントリ CSS の :root トークンへ集約する。
- *    --entry-css 指定時は overrides で色ルールのみ無効化し :root 定義を許可する。
- * 2. :hover ガード必須（defensive-css/no-accidental-hover）:
- *    タッチデバイスでの :hover 残留を防ぐため @media (hover: hover) 内への配置を必須とする。
- *
- * 例外は Stylelint 標準の「stylelint-disable-next-line <rule>」でオプトアウトする。
+ * - 生カラー禁止: ENTRY_CSS 指定時は overrides で同ファイルの色ルールのみ無効化する
+ * - :hover ガード: @media (hover: hover) 外の :hover を禁止する
+ * 例外は「stylelint-disable-next-line <rule>」でオプトアウトする。
  */
+import path from "node:path";
 import defensiveCss from "stylelint-plugin-defensive-css";
 
-export function buildStylelintConfig(entryCss = process.env.NUAGE_UI_ENTRY_CSS) {
+const DEFAULT_IGNORES = [
+  "**/node_modules/**", "**/.next/**", "**/dist/**", "**/build/**", "**/out/**", "**/coverage/**",
+  "**/e2e/**", "**/mocks/**", "**/public/**", "**/.git/**", "**/.storybook/**", "**/.nuage-workspace-policies/**",
+  "**/tests/**", "**/__tests__/**", "**/__mocks__/**", "**/playwright-report/**", "**/test-results/**", "**/storybook-static/**",
+  "**/*.test.*", "**/*.spec.*", "**/*.stories.*", "**/*.config.*", "**/*.d.ts",
+];
+const toPosix = (p) => p.split(path.sep).join("/");
+const parseList = (raw) => (raw ? raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean) : []);
+
+export function buildStylelintConfig({ cwd = process.cwd(), entryCss = process.env.ENTRY_CSS || "", excludes = parseList(process.env.EXCLUDE) } = {}) {
+  const root = toPosix(path.resolve(cwd));
+  const ignoreFiles = [
+    ...DEFAULT_IGNORES.map((g) => `${root}/${g}`),
+    ...excludes.flatMap((raw) => {
+      const p = toPosix(raw).replace(/^\.\//, "").replace(/\/+$/, "");
+      if (/[*?]/.test(p)) return p.includes("/") ? [`${root}/${p}`] : [`${root}/**/${p}`];
+      return p.includes("/") ? [`${root}/${p}`, `${root}/${p}/**`] : [`${root}/**/${p}/**`, `${root}/**/${p}`];
+    }),
+  ];
   return {
     plugins: [defensiveCss],
+    ignoreFiles,
     rules: {
       "color-no-hex": true,
       "color-named": "never",
       "function-disallowed-list": ["rgb", "rgba", "hsl", "hsla"],
       "defensive-css/no-accidental-hover": true,
     },
-    ...(entryCss
-      ? {
-          overrides: [
-            {
-              files: [entryCss],
-              rules: { "color-no-hex": null, "color-named": null, "function-disallowed-list": null },
-            },
-          ],
-        }
-      : {}),
+    ...(entryCss ? { overrides: [{ files: [toPosix(path.resolve(root, entryCss))], rules: { "color-no-hex": null, "color-named": null, "function-disallowed-list": null } }] } : {}),
   };
 }
 

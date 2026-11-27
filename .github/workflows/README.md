@@ -134,19 +134,20 @@ jobs:
 
 #### ローカル実行
 
-動作要件として **Node.js 22.5 以上**（`path.matchesGlob` 対応）が必要である。
+動作要件として **Node.js 22.5 以上**（`fs.globSync` / `path.matchesGlob` 対応）が必要である。手元に `nuage-workspace` がある場合は直接参照し、無い場合は `master` から一時取得する。
 
 ```bash
-LOCAL_RUNNER="${HOME}/ghq/github.com/k-wa-wa/nuage-workspace/.github/workflows/validate/ui/run.sh"
-if [ -x "$LOCAL_RUNNER" ]; then
-  RUNNER="$LOCAL_RUNNER"
-else
+UI_DIR="${HOME}/ghq/github.com/k-wa-wa/nuage-workspace/.github/workflows/validate/ui"
+if [ ! -d "${UI_DIR}" ]; then
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "$TMP_DIR"' EXIT
   curl -sSfL "https://github.com/k-wa-wa/nuage-workspace/archive/refs/heads/master.tar.gz" \
     | tar -xz -C "$TMP_DIR" "nuage-workspace-master/.github/workflows/validate/ui"
-  RUNNER="${TMP_DIR}/nuage-workspace-master/.github/workflows/validate/ui/run.sh"
+  UI_DIR="${TMP_DIR}/nuage-workspace-master/.github/workflows/validate/ui"
 fi
+[ -d "${UI_DIR}/node_modules" ] || npm ci --prefix "$UI_DIR"
 
-"$RUNNER" --entry-css app/globals.css frontend
+cd frontend
+ENTRY_CSS="app/globals.css" "${UI_DIR}/node_modules/.bin/stylelint" "**/*.css" --config "${UI_DIR}/stylelint.config.mjs" --allow-empty-input
+node "${UI_DIR}/check-tsx-colors.mjs"
 ```
