@@ -170,7 +170,7 @@ flowchart LR
 | **JWKS URL（確定値）** | `http://spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys` | `monitoring-pwa` に渡す URL |
 
 - **OIDC Discovery Provider の `domains`**: `spiffe-oidc-discovery-provider.spire.svc.cluster.local` と `spiffe-oidc-discovery-provider.spire.svc` を指定する。
-- **`spire-server` 側の `sshpop` 設定**: `helm-charts-hardened` には `sshpop` の専用トグルが無いため、`spire-server.unsupportedBuiltInPlugins.nodeAttestor.sshpop` にプラグイン設定を記述し、`manifests/apps/spire/base/ssh-ca.pub` から生成した ConfigMap を `extraVolumes` / `extraVolumeMounts` で `/etc/spire/ssh/ssh-ca.pub` へマウントする。ホスト証明書の署名更新や確認コマンドぶれを防ぐため、`agent_path_template` でホストの principal 名ベースの固定 SPIFFE ID を割り当てる。
+- **`spire-server` 側の `sshpop` 設定**: `helm-charts-hardened` には `sshpop` の専用トグルが無いため、`spire-server.unsupportedBuiltInPlugins.nodeAttestor.sshpop` にプラグイン設定を記述し、`manifests/apps/spire/base/ssh-ca.pub` から生成した ConfigMap を `extraVolumes` / `extraVolumeMounts` で `/etc/spire/ssh/ssh-ca.pub` へマウントする。ホスト証明書の署名更新や確認コマンドぶれを防ぐため、`agent_path_template` でホストの principal 名ベースの固定 SPIFFE ID を割り当てる。SPIRE の `sshpop` はテンプレート出力の前に `/spire/agent` を自動付与するため（既定は `/{{ .PluginName }}/{{ .Fingerprint }}`）、テンプレート側には `/spire/agent` を含めない。`canonical_domain` を付けずにホスト証明書の先頭 principal（`-n "<host>"`）を `.Hostname` として使い、`spiffe://nuage/spire/agent/sshpop/<host>` を生成させる。
   ```yaml
   spire-server:
     unsupportedBuiltInPlugins:
@@ -178,7 +178,7 @@ flowchart LR
         sshpop:
           plugin_data:
             cert_authorities_path: "/etc/spire/ssh/ssh-ca.pub"
-            agent_path_template: "/spire/agent/sshpop/{{ index .ValidPrincipals 0 }}"
+            agent_path_template: "/{{ .PluginName }}/{{ .Hostname }}"
   ```
 - **ステートレス再起動時の挙動**: SPIRE Server 再起動時は CA 鍵と SQLite が初期化され、新しい CA 鍵が生成される。`spire-controller-manager` が CRD から登録エントリを再同期し、OIDC Discovery Provider が新公開鍵を `/keys` に反映する。Agent がキャッシュ済みバンドルとの不一致で再接続に失敗しないよう、Agent 側のブートストラップ設定・再起動追従を「実装で最初に確かめること」で確認する。
 
@@ -517,6 +517,7 @@ AI は SOPS 操作および本番反映を行わない。以下は人間が実�
 2. **既存 `atelier` ホスト鍵への署名**:
    ```bash
    cd ~/ghq/github.com/k-wa-wa/nuage-cluster
+   # -n "<host>" でホスト名 (atelier) を先頭 principal に指定して署名する (agent_path_template の .Hostname 前提)
    bash scripts/gen-host-keys.sh --sign-only atelier
    # 生成された .ssh/certs/atelier-cert.pub を確認し、コミット・push する。
    # atelier の spire-agent 起動後、SPIRE Server で Agent の実 ID を確認する:
