@@ -50,4 +50,4 @@ export function buildStylelintConfig({ cwd = process.cwd(), repoRoot = process.e
   };
 }
 
-export default buildStylelintConfig();
+export default buildStylelintConfig({ entryCss: process.argv[1]?.includes("stylelint") ? process.env.ENTRY_CSS || "" : "" });
