@@ -82,9 +82,10 @@ flowchart LR
 
 ### 3.2. `go test ./...` による自動検査
 
-依存関係のルールはレビュー時の目視に頼らず、**各 Go モジュール内に依存方向を検査するテストを置き、`go test ./...` の実行で違反を落とす**仕組みとする。
+依存関係のルールはレビュー時の目視に頼らず、**各 Go モジュール内の `internal/arch_test.go` に依存方向を検査するテストを置き、`go test ./...` の実行で違反を落とす**仕組みとする。
 
-- 新しい静的解析ツールや外部リンタは追加せず、Go 標準ライブラリ（`go/parser`・`go/token` または `golang.org/x/tools/go/packages` 等、既存の標準的な手段）を用いたテストとして実装する。
+- 新しい静的解析ツールや `go.mod` への外部依存は追加せず、Go 標準ライブラリ（`go/parser`・`go/token`、または `go list -json` の実行）のみを用いたテストとして実装する。
+- `usecase` 層の純粋性（Web フレームワークや DB ドライバ等の import 禁止）はモジュールごとに検査の強さがばらつかないよう**許可リスト方式**で判定し、原則として Go 標準ライブラリと同一モジュールの `internal/domain` のみを import 可能とする。
 - これにより、ローカル開発時および CI 上の通常のテスト実行だけでアーキテクチャ境界の違反を即座に検知できる。
 
 ---
@@ -96,8 +97,9 @@ flowchart LR
 | 新しく書くもの | 書く場所 |
 |---|---|
 | API を 1 本足す | `adapter/http/<機能>.go`（ハンドラーと DTO）と `usecase/<機能>.go`（操作） |
-| DB の読み書き | `usecase/port.go`（または機能別ファイル）に interface、`infra/<DB名>/<機能>.go` に実装 |
-| 外部サービスを呼ぶ | `infra/<サービス名>/` に実装、port（interface）は `usecase` に置く |
+| 定期実行・バッチ・ワーカー | `adapter/batch/<機能>.go`（起動口）と `usecase/<機能>.go`（処理） |
+| DB の読み書き | `usecase/port.go` に interface、`infra/<DB名>/<機能>.go` に実装 |
+| 外部サービスを呼ぶ | `infra/<サービス名>/` に実装、port（interface）は `usecase/port.go` に置く |
 | 判定・ルール・値の規則 | `domain/` |
 | ルーティング | `adapter/http/router.go` |
 | 環境変数・起動設定の追加 | `config/` |
