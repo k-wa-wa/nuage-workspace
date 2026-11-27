@@ -87,3 +87,10 @@ NixOS に効く変更 (nuage-cluster の `nix/`、flake input のリポジトリ
   特別な指示がない限り、Terraform, Terragrunt の操作は実行しないこと。ユーザーに操作を促すこと。
 - **言い切り調の使用**:
   コメントアウトやドキュメントを記述する際は、です・ます調（敬体）を避け、である・する調（常体）の言い切りを使用すること。
+
+---
+
+## 7. 設計標準
+
+- **Go バックエンド**: Go バックエンドの新規作成・改修を行うときは、[docs/backend-architecture.md](docs/backend-architecture.md) の標準に従う。
+- **Web UI / PWA**: Web UI および PWA の設計・実装を行うときは、[docs/ui-design.md](docs/ui-design.md) の標準に従う。
