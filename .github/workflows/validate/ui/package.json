@@ -1,0 +1,17 @@
+{
+  "name": "nuage-ui-validate",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Nuage UI 設計標準の共通 lint ツール群",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "stylelint": "^16.19.1",
+    "stylelint-plugin-defensive-css": "2.10.0"
+  }
+}

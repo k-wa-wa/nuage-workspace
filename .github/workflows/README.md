@@ -1,6 +1,6 @@
 # 共通 GitHub Actions ワークフロー
 
-各リポジトリから `workflow_call` で呼び出す共通 Reusable Workflow 群である。詳細な入力パラメータや検証ルールは各ワークフロー定義および [validate/k8s/](validate/k8s/) を参照すること。
+各リポジトリから `workflow_call` で呼び出す共通 Reusable Workflow 群である。詳細な入力パラメータや検証ルールは各ワークフロー定義および [validate/k8s/](validate/k8s/)・[validate/ui/](validate/ui/) を参照すること。
 
 ## 一覧
 
@@ -8,7 +8,8 @@
 | :-- | :-- |
 | `docker-build-push.yml` | Docker イメージのビルド、Trivy 脆弱性スキャン（合格時のみ GHCR へ push）、PR プレビューコメント投稿 |
 | `k8s-validate.yml` | Kustomize ビルド、`yamllint` / `kubeconform` / `pluto` 検証、Conftest（Rego）による k8s 標準ポリシー検査 |
-| `ci.yml` | このリポジトリ内の Rego ポリシーテストとワークフロー YAML の lint（他リポジトリからは呼ばない） |
+| `ui-validate.yml` | Stylelint と軽量チェッカによる Nuage UI 基本ルール（CSS の生カラー禁止・`:hover` ガード、TSX/JSX の `style={{}}` / Tailwind 任意値の生カラー禁止）検査 |
+| `ci.yml` | このリポジトリ内の Rego ポリシーテスト、UI lint テスト、`shellcheck`、ワークフロー YAML の lint（他リポジトリからは呼ばない） |
 
 ## 使い方
 
@@ -94,4 +95,61 @@ fi
 # 例: "$RUNNER" --preview k8s/overlays/preview
 # 例: "$RUNNER" manifests/bootstrap/kustomization.yaml manifests/apps/*.yaml
 "$RUNNER" --prod k8s/overlays/prod
+```
+
+### `ui-validate.yml`
+
+`target-dir` 配下の `.css` / `.tsx` / `.jsx`（既定で `*.test.*`, `*.spec.*`, `*.stories.*`, `*.config.*`, `*.d.ts`, `e2e/`, `mocks/`, `public/`, `.storybook/`, `tests/`, `node_modules/`, `.next/`, `dist/` 等を除外）を対象に、以下を自動検証する。
+
+- **CSS**: 生カラー直書き禁止（`color-no-hex`, `color-named`, `function-disallowed-list`）と `:hover` ガード（`defensive-css/no-accidental-hover` により `@media (hover: ...)` 外の `:hover` を検出。`@media (hover: none)` の除外等の条件精査は [docs/ui-design.md](../../docs/ui-design.md) に基づきレビューで確認する）。`entry-css` を指定した場合は、そのファイルのみ `:root` トークン定義のため色ルールを除外する（`:hover` ガードは有効）。
+- **TSX / JSX**: `style={{ ... }}` インラインスタイル内の生カラー（`#hex`, `rgb(`, `rgba(`, `hsl(`, `hsla(`）および Tailwind 任意値カラークラス（`bg-[#...]` 等）の禁止。
+
+※ `<style>{...}</style>` ブロック・JS 設定オブジェクト・エントリ CSS 基盤ガードレール・定性デザイン原則は [docs/ui-design.md](../../docs/ui-design.md) に基づきレビューで確認する。
+
+```yaml
+permissions:
+  contents: read
+
+jobs:
+  validate-ui:
+    uses: k-wa-wa/nuage-workspace/.github/workflows/ui-validate.yml@master
+    with:
+      target-dir: "frontend"
+      entry-css: "app/globals.css"
+```
+
+既存リポジトリへ段階導入する場合は `fail-on-policy: false` や `exclude`、例外コメント（CSS は `/* stylelint-disable-next-line <rule> */`、TSX/JSX は行末・直前行の `nuage-ui-ignore-color`）を併用する。
+
+```yaml
+jobs:
+  validate-ui:
+    uses: k-wa-wa/nuage-workspace/.github/workflows/ui-validate.yml@master
+    with:
+      target-dir: "frontend"
+      entry-css: "app/globals.css"
+      exclude: |
+        legacy/**
+      fail-on-policy: false
+```
+
+#### ローカル実行
+
+動作要件として **Node.js 22.5 以上**（`fs.globSync` / `path.matchesGlob` 対応）が必要である。手元に `nuage-workspace` がある場合は直接参照し、無い場合は `master` から一時取得する。
+
+```bash
+UI_DIR="${HOME}/ghq/github.com/k-wa-wa/nuage-workspace/.github/workflows/validate/ui"
+if [ ! -d "${UI_DIR}" ]; then
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  curl -sSfL "https://github.com/k-wa-wa/nuage-workspace/archive/refs/heads/master.tar.gz" \
+    | tar -xz -C "$TMP_DIR" "nuage-workspace-master/.github/workflows/validate/ui"
+  UI_DIR="${TMP_DIR}/nuage-workspace-master/.github/workflows/validate/ui"
+fi
+[ -d "${UI_DIR}/node_modules" ] || npm ci --prefix "$UI_DIR"
+
+(
+  export REPO_ROOT="$PWD" TARGET_DIR="frontend" ENTRY_CSS="app/globals.css"
+  cd -- "$UI_DIR"
+  node ./lint.mjs
+)
 ```

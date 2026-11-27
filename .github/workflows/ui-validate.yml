@@ -1,0 +1,74 @@
+name: UI Design Standard Validate (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      target-dir:
+        description: "UI 検証対象のディレクトリ（例: frontend または .）"
+        type: string
+        default: "."
+      entry-css:
+        description: "エントリ CSS ファイルのパス（指定時は :root トークン定義のため同ファイルのみ生カラー禁止ルールを除外。例: app/globals.css）"
+        type: string
+        default: ""
+      exclude:
+        description: "追加で除外するパス/glob パターン（カンマまたは改行区切り）"
+        type: string
+        default: ""
+      fail-on-policy:
+        description: "UI ポリシー違反時にジョブを失敗させるか（false の場合は警告サマリのみ出力する）"
+        type: boolean
+        default: true
+      policy-ref:
+        description: "検証スクリプトおよびルール定義を取得する nuage-workspace の ref（workflow の ref と揃えること）"
+        type: string
+        default: "master"
+      require-same-repo-pr:
+        description: "fork からの PR ではジョブをスキップするかどうか"
+        type: boolean
+        default: true
+
+jobs:
+  validate:
+    name: Validate UI Design Standards
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name != 'pull_request') ||
+      (!inputs.require-same-repo-pr || github.event.pull_request.head.repo.full_name == github.repository)
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout calling repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout Nuage UI validation rules
+        uses: actions/checkout@v4
+        with:
+          repository: k-wa-wa/nuage-workspace
+          ref: ${{ inputs.policy-ref }}
+          sparse-checkout: .github/workflows/validate/ui
+          path: .nuage-workspace-policies
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: ".nuage-workspace-policies/.github/workflows/validate/ui/package-lock.json"
+
+      - name: Install UI validation dependencies
+        run: npm ci --prefix .nuage-workspace-policies/.github/workflows/validate/ui
+
+      - name: Run UI validation
+        env:
+          TARGET_DIR: ${{ inputs.target-dir }}
+          ENTRY_CSS: ${{ inputs.entry-css }}
+          EXCLUDE: ${{ inputs.exclude }}
+          FAIL_ON_POLICY: ${{ inputs.fail-on-policy }}
+        run: |
+          export REPO_ROOT="$PWD"
+          cd -- ".nuage-workspace-policies/.github/workflows/validate/ui"
+          node ./lint.mjs

@@ -80,6 +80,8 @@ jobs:
           CFG="${{ runner.temp }}/workflow-yamllint.yaml"
           cat << 'EOF' > "$CFG"
           extends: default
+          ignore: |
+            **/node_modules/**
           rules:
             line-length: disable
             document-start: disable
@@ -178,3 +180,23 @@ jobs:
 
       - name: Run K8s validation smoke tests
         run: .github/workflows/validate/k8s/tests/smoke-test.sh
+
+  ui-runner-test:
+    name: UI Validate Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: ".github/workflows/validate/ui/package-lock.json"
+
+      - name: Install UI validation dependencies
+        run: npm ci --prefix .github/workflows/validate/ui
+
+      - name: Run UI validation tests
+        run: npm test --prefix .github/workflows/validate/ui
