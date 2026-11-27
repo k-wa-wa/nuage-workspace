@@ -45,7 +45,7 @@ Trust Domain は **`nuage`** に統一する。
    - `exp` が過ぎていないこと、`nbf` が未来すぎないことを検証する（クロックスキュー許容は 30 秒以内とする）。
 3. **対象者検証（`aud`）**:
    - `aud` クレームに「受け側自身のサービス識別子」が含まれることを検証する。他サービス向けのトークン流用を許さない。
-   - **受け側の `aud` は環境（デプロイ先）ごとに一意にする**（例: 本番 `monitoring-pwa`、preview `nuage-monitoring-stack-pr-42`）。信頼度の低い環境（preview 等）と本番で同じ `aud` を使わない（preview 側コードが受け取った JWT-SVID を本番へ流用するのを防ぐため）。
+   - **受け側の `aud` は環境（デプロイ先）ごとに一意にする**（例: 本番 `monitoring-pwa`、preview `monitoring-pwa.nuage-monitoring-stack-pr-42`）。信頼度の低い環境（preview 等）と本番で同じ `aud` を使わない（preview 側コードが受け取った JWT-SVID を本番へ流用するのを防ぐため）。
 4. **呼び出し元認可（`sub` 許可リスト）**:
    - `sub` クレーム（呼び出し元の SPIFFE ID）が、**git で宣言された許可リスト**（必要に応じてロールやアプリ内ユーザー ID との対応表を含む）に完全一致することを検証する。
    - 許可リストが未設定または空の状態で起動した場合はエラーとして起動を止める。
@@ -217,9 +217,9 @@ flowchart LR
   - `host_cert_path = "/etc/spire/atelier-cert.pub"`（git 管理下の `.ssh/certs/atelier-cert.pub` を NixOS 設定で配置）。
   - `/var/lib/nix-provisioning/ssh_host_ed25519_key` は `root:root` (`0600`) であるため、`spire-agent.service` は `root` または systemd `LoadCredential` 経由で鍵を読み込む（`systemd` workload attestor のため D-Bus・`/proc` 参照権限も確保する）。
 - **WorkloadAttestor**:
-  - `WorkloadAttestor "systemd" {}`（主判定）および `WorkloadAttestor "unix" {}` を有効にする。
-  - プロキシサービス（`monitoring-bot-proxy.service`）のプロセスが Workload API ソケットへ接続すると、`systemd:id:monitoring-bot-proxy.service` セレクタが付与される。
-- **Workload API ソケットパス**: `/run/spire/sockets/agent.sock`（プロキシユニットのみが接続できるようソケット権限・グループ、例: `0660` + 専用グループまたは `spire-agent` グループで保護する）。
+  - `WorkloadAttestor "unix" {}` および `WorkloadAttestor "systemd" {}` を有効にする。
+  - プロキシサービス（本番 `monitoring-bot-proxy.service` および preview 用インスタンス）は専用の非特権 OS ユーザー `monitoring-bot-proxy`（`spire-agent` グループ所属）で実行する。これによりどのインスタンスが Workload API ソケットへ接続しても `unix:user:monitoring-bot-proxy` セレクタが付与される。
+- **Workload API ソケットパス**: `/run/spire/sockets/agent.sock`（`0660`、グループ `spire-agent` で保護し、プロキシ以外の一般ユーザーから接続できないようにする）。
 - **ステートレス Server 追従とブートストラップのリスク**:
   - `data_dir` を揮発性ディレクトリ（例: systemd の `RuntimeDirectory=spire-agent` による `/run/spire-agent`）に置き、`insecure_bootstrap = true` と組み合わせることで Server 再起動後の新 CA 鍵へ自動追従できる。
   - ただし、`insecure_bootstrap = true` と揮発 `data_dir` の組み合わせは、Agent が再起動するたびに Server 証明書を事前検証なしに信用し直す（TOFU の反復）ことになる。通信経路は SDN / LAN 内に閉じるが、経路上のなりすましリスクを低減したい場合は、代替案として Let's Encrypt 等の公開 TLS 証明書を持つ HTTPS エンドポイント（または k8s 側の SPIRE Bundle Endpoint）を `trust_bundle_url` に指定してバンドルを取得する方式を検討する。
@@ -238,9 +238,11 @@ spec:
   spiffeID: "spiffe://nuage/host/atelier/bot"
   parentID: "spiffe://nuage/spire/agent/sshpop/atelier"
   selectors:
-    - "systemd:id:monitoring-bot-proxy.service"
+    - "unix:user:monitoring-bot-proxy"
   jwtSVIDTTL: "5m"
 ```
+
+- セレクタを `unix:user:monitoring-bot-proxy`（AND 条件の単一セレクタ）に統一することで、`atelier` 上で本番用（`monitoring-bot-proxy.service`）と preview 開発用（`monitoring-bot-proxy-preview.service`）の複数インスタンスを起動しても、k8s 側の `ClusterStaticEntry` を PR ごとに増やすことなく双方へ `spiffe://nuage/host/atelier/bot` の SVID を発行できる。
 
 #### 3.3. SSH CA とホスト証明書署名手順（人間の作業）
 
@@ -290,11 +292,11 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 | 待ち受けアドレス | `PROXY_LISTEN_ADDR` | 必須 | 平文 HTTP 待ち受け先（必ず `127.0.0.1:<port>`） | `127.0.0.1:18090` | `127.0.0.1:18090` |
 | ヘルスチェック用アドレス | `HEALTH_LISTEN_ADDR` | 任意 | `/healthz` のみを返す管理用アドレス（プロキシ本体を外部 IP に晒さず kubelet probe を通すため分離） | `127.0.0.1:18091` | `:18091` |
 | 宛先 URL | `PROXY_TARGET_URL` | 必須 | 転送先ベース URL（`https://` またはクラスタ内同一 ns 向け `http://`） | `https://monitoring.wpcapp.net` | `http://monitoring-pwa-backend` |
-| 宛先 `aud` | `SPIFFE_AUDIENCE` | 必須 | JWT-SVID に要求する `aud` クレーム（環境ごとに一意） | `monitoring-pwa` | `$(POD_NAMESPACE)`（例: `nuage-monitoring-stack-pr-42`） |
+| 宛先 `aud` | `SPIFFE_AUDIENCE` | 必須 | JWT-SVID に要求する `aud` クレーム（サービス名＋環境で一意） | `monitoring-pwa` | `monitoring-pwa.$(POD_NAMESPACE)`（例: `monitoring-pwa.nuage-monitoring-stack-pr-42`） |
 | Workload API ソケット | `SPIFFE_ENDPOINT_SOCKET` | 必須 | SPIRE Agent の UDS パス（`unix://...` 形式） | `unix:///run/spire/sockets/agent.sock` | `unix:///spiffe-workload-api/spire-agent.sock` |
 | JWT ファイルパス | `JWT_FILE_PATH` | 不採用 | `spiffe-helper` 経由ファイル方式は採らず `SPIFFE_ENDPOINT_SOCKET` 直結方式に統一したため設定項目から除外 | — | — |
 
-- **atelier でのインスタンス分離**: 本番と preview の両方に接続する場合でも、1 本のプロキシインスタンス（`127.0.0.1:18090`）の宛先や `SPIFFE_AUDIENCE` を切り替える運用は行わない。宛先環境ごとに別インスタンス（別ポート・別 `SPIFFE_AUDIENCE`・別 systemd ユニット）を起動する（例: preview 開発用インスタンス `monitoring-bot-proxy-pr-<N>.service` は `PROXY_LISTEN_ADDR=127.0.0.1:18092`、`HEALTH_LISTEN_ADDR=127.0.0.1:18093`、`PROXY_TARGET_URL=https://monitoring-pr-<N>.wpcapp.net`、`SPIFFE_AUDIENCE=nuage-monitoring-stack-pr-<N>` とし、必要であれば対応する `ClusterStaticEntry` セレクタを付与する）。
+- **atelier でのインスタンス分離**: 本番と preview の両方に接続する場合でも、1 本のプロキシインスタンス（`127.0.0.1:18090`）の宛先や `SPIFFE_AUDIENCE` を切り替える運用は行わない。宛先環境ごとに別インスタンス（別ポート・別 `SPIFFE_AUDIENCE`・別 systemd ユニット）を起動する（例: preview 開発用インスタンス `monitoring-bot-proxy-preview.service` は `PROXY_LISTEN_ADDR=127.0.0.1:18092`、`HEALTH_LISTEN_ADDR=127.0.0.1:18093`、`PROXY_TARGET_URL=https://monitoring-pr-<N>.wpcapp.net`、`SPIFFE_AUDIENCE=monitoring-pwa.nuage-monitoring-stack-pr-<N>` とし、全インスタンスを同じ OS ユーザー `monitoring-bot-proxy` で実行して単一の `ClusterStaticEntry` を共有する）。
 
 - **リクエスト処理**:
   1. `127.0.0.1:18090` で受信したリクエストの `Authorization` ヘッダ（bot が付けたダミーの `xoxb-` / `xapp-` 等）を破棄し、`JWTSource.FetchJWTSVID(ctx, jwtsvid.Params{Audience: cfg.Audience})` で得た最新の `Authorization: Bearer <JWT-SVID>` に差し替える。
@@ -302,7 +304,7 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
   3. **`Host` ヘッダの扱い**: プロキシはリクエストの `Host` ヘッダおよび `r.URL` のスキーム・ホストを `PROXY_TARGET_URL` のホストへ書き換えて転送する（Cilium Ingress が SNI / `Host: monitoring.wpcapp.net` でルーティングするため必須）。
   4. **WebSocket Upgrade**: `httputil.ReverseProxy` により WebSocket Upgrade ヘッダも透過転送可能とする。
 - **atelier における信頼境界とハードニング検討事項**:
-  - SPIRE の `systemd` workload attestor（`systemd:id:monitoring-bot-proxy.service`）が証明するのは「プロキシ自身のユニット」であり、`127.0.0.1:18090` へ接続してくるローカルプロセスは検証しない。`atelier` は複数の AI エージェントが任意のコードを動かす作業ホストであるため、`spiffe://nuage/host/atelier/bot` の実質的な信頼境界は「`atelier` 上のローカルプロセス全般」となる。
+  - SPIRE の `unix` workload attestor（`unix:user:monitoring-bot-proxy`）が証明するのは「`monitoring-bot-proxy` ユーザーで動くプロキシプロセス」であり、`127.0.0.1:18090` へ接続してくるローカルプロセスは検証しない。`atelier` は複数の AI エージェントが任意のコードを動かす作業ホストであるため、`spiffe://nuage/host/atelier/bot` の実質的な信頼境界は「`atelier` 上のローカルプロセス全般」となる。
   - 将来的に同一ホスト内で権限分離が必要になった場合は、bot 本体を専用の非特権 OS ユーザーで実行し、`nftables` の `lo` 出力制限（`meta skuid`）で `127.0.0.1:18090` への接続元ユーザーを制限する構成を検討する。
 
 #### 4.4. Socket Mode の WebSocket 接続方式（確定仕様）
@@ -324,7 +326,10 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 
 - **Slack API Base URL**: 環境変数で切り替え可能にし、プロキシ接続時は `http://127.0.0.1:18090/slack/api/` を指定する（末尾の `/slack/api/` まで含めること。`monitoring-pwa` のルーターは `/slack/api/:method` で待ち受けているため）。
 - **トークン**: `SLACK_BOT_TOKEN`・`SLACK_APP_TOKEN` 等の環境変数はそのまま残し、プロキシ経由時はダミー値（例: `xoxb-spiffe`、`xapp-spiffe`）を渡す。
-- **開発中の接続先と移行**: Step 2 が `nuage-monitoring-stack` にマージされる前は、従来どおり preview の静的トークン（`https://monitoring-pr-<N>.wpcapp.net/slack/api/`）で進める。Step 2 マージ後は preview も JWT-SVID 必須かつ `atelier` bot の `sub` を受け付ける構成になるため、Step 1 完了後の `atelier` では本番用プロキシ（`127.0.0.1:18090`）の設定を切り替えず、preview 宛ての別インスタンス（例: `127.0.0.1:18092`、`PROXY_TARGET_URL=https://monitoring-pr-<N>.wpcapp.net`、`SPIFFE_AUDIENCE=nuage-monitoring-stack-pr-<N>`）を立て、bot の接続先を `http://127.0.0.1:18092/slack/api/` に向けて開発を継続する。
+- **開発中の接続先と移行**:
+  - Step 2 が `nuage-monitoring-stack` にマージされる前は、従来どおり preview の静的トークン（`https://monitoring-pr-<N>.wpcapp.net/slack/api/`）で進める。
+  - Step 1-C および Step 2 マージ後の通常開発は、本番用プロキシ（`http://127.0.0.1:18090/slack/api/`）へ接続する（開いている PR が無い期間もそのまま開発できる）。
+  - 特定の開いている PR preview 環境へ繋いで検証したい場合のみ、本番用プロキシ（`127.0.0.1:18090`）は触らず、`nuage-cluster/nix/hosts/atelier/configuration.nix` のオプション 1 つ（例: `previewPrNumber = <N>;`）で preview 用別インスタンス（`monitoring-bot-proxy-preview.service`、`127.0.0.1:18092`、`PROXY_TARGET_URL=https://monitoring-pr-<N>.wpcapp.net`、`SPIFFE_AUDIENCE=monitoring-pwa.nuage-monitoring-stack-pr-<N>`）を有効化して `nixos-upgrade` で反映し、bot の接続先を `http://127.0.0.1:18092/slack/api/` に向ける（`ClusterStaticEntry` は `unix:user:monitoring-bot-proxy` のまま変更不要）。
 
 ---
 
@@ -337,7 +342,7 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 | 環境変数名 | 必須 | 形式・内容 | 検証ルール |
 | :--- | :--- | :--- | :--- |
 | `SPIFFE_JWKS_URL` | 必須 | `http://spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys` | 空不可。有効な `http://` または `https://` URL であること |
-| `SPIFFE_JWT_AUDIENCE` | 必須 | 本番: `monitoring-pwa`、preview: `$(POD_NAMESPACE)`（例: `nuage-monitoring-stack-pr-42`） | 空不可（環境ごとに一意な値を設定する） |
+| `SPIFFE_JWT_AUDIENCE` | 必須 | 本番: `monitoring-pwa`、preview: `monitoring-pwa.$(POD_NAMESPACE)`（例: `monitoring-pwa.nuage-monitoring-stack-pr-42`） | 空不可（サービス名＋環境で一意な値を設定する） |
 | `BOT_USERS_JSON` | 必須 | 許可する bot 一覧の JSON 配列（下例参照） | 1 件以上必須。`sub`（`spiffe://` 始まり・重複不可）、`user_id`（`U` 始まり・重複不可）、`bot_id`（`B` 始まり・重複不可）、`name`（空不可）。`is_default: true` は高々 1 件 |
 
 `BOT_USERS_JSON` の JSON スキーマ例（複数 bot を区別する）:
@@ -383,11 +388,11 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
     - name: SPIFFE_JWKS_URL
       value: "http://spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys"
     - name: SPIFFE_JWT_AUDIENCE
-      value: "$(POD_NAMESPACE)"
+      value: "monitoring-pwa.$(POD_NAMESPACE)"
     - name: BOT_USERS_JSON
       value: '[{"sub":"spiffe://nuage/ns/$(POD_NAMESPACE)/sa/echo-bot","user_id":"U02ECHOBOT","bot_id":"B02ECHOBOT","name":"echo-bot","is_default":true},{"sub":"spiffe://nuage/host/atelier/bot","user_id":"U01BOT","bot_id":"B01BOT","name":"nuage-bot"}]'
     ```
-  - preview 環境ではこの規則により、自 Namespace の `echo-bot` と `atelier` の bot のみが受け付けられ、他の PR（`pechka-pr-*` 等）からのなりすましを受け付けない。また `SPIFFE_JWT_AUDIENCE` が `$(POD_NAMESPACE)`（`nuage-monitoring-stack-pr-<N>`）で一意になるため、preview 向けに発行された JWT-SVID を本番（`aud=monitoring-pwa`）へ流用できない。
+  - preview 環境ではこの規則により、自 Namespace の `echo-bot` と `atelier` の bot のみが受け付けられ、他の PR（`pechka-pr-*` 等）からのなりすましを受け付けない。また `SPIFFE_JWT_AUDIENCE` が `monitoring-pwa.$(POD_NAMESPACE)`（`monitoring-pwa.nuage-monitoring-stack-pr-<N>`）でサービス名＋環境ごとに一意になるため、preview 向けに発行された JWT-SVID を本番（`aud=monitoring-pwa`）や同一 Namespace 内の他サービスへ流用できない。
 
 #### 5.3. API・WebSocket 認可と bot 区別・配信設計
 
@@ -449,7 +454,7 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
     - name: PROXY_TARGET_URL
       value: "http://monitoring-pwa-backend"
     - name: SPIFFE_AUDIENCE
-      value: "$(POD_NAMESPACE)"
+      value: "monitoring-pwa.$(POD_NAMESPACE)"
     - name: SPIFFE_ENDPOINT_SOCKET
       value: "unix:///spiffe-workload-api/spire-agent.sock"
     ```
@@ -513,7 +518,7 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 1. **Step 1-A（`nuage-cluster`）**: `tools/spiffe-token-proxy/` の実装・単体テスト・Dockerfile・`.github/workflows/docker-build-push.yml`・`nix/pkgs/spiffe-token-proxy` の作成とイメージの GHCR 公開。
 2. **Step 1-B（`nuage-cluster`）**: `manifests/apps/spire/`（SPIRE Server / Agent / CSI Driver / OIDC Discovery Provider / Cilium TLS passthrough Ingress / `ClusterSPIFFEID`）・`manifests/apps/preview-network-policy.yaml` 更新・`scripts/gen-host-keys.sh`（または `sign-host-keys.sh`）署名機能追加・`nix/modules/spire-agent.nix` 作成。
 3. **人間作業（Step 1 と Step 2 の間）**: SSH CA 鍵生成・SOPS 格納・`atelier` ホスト鍵への署名・CA 公開鍵と署名済み証明書のコミット・push（詳細は 7.2 節）。
-4. **Step 1-C（`nuage-cluster`）**: `ClusterStaticEntry`（`parentID: "spiffe://nuage/spire/agent/sshpop/atelier"`）を追加して `spire-server agent list` で一致を確かめ、`nix/hosts/atelier/configuration.nix` で `spire-agent` と `monitoring-bot-proxy` を有効化、push 後に人間が `nixos-upgrade` を実行する。
+4. **Step 1-C（`nuage-cluster`）**: `ClusterStaticEntry`（`parentID: "spiffe://nuage/spire/agent/sshpop/atelier"`、`selectors: ["unix:user:monitoring-bot-proxy"]`）を追加して `spire-server agent list` で一致を確かめ、`nix/hosts/atelier/configuration.nix` で `spire-agent` と本番用 `monitoring-bot-proxy`（`User=monitoring-bot-proxy`、および必要時にオプションで有効化できる preview 用 `monitoring-bot-proxy-preview` インスタンス定義）を有効化し、push 後に人間が `nixos-upgrade` を実行する。
 5. **Step 2（`nuage-monitoring-stack`）**: **Step 1（`atelier` を含む SPIRE 基盤稼働）が完了した後に実行・マージする**（Step 2 マージ以降は preview も静的トークンを受け付けなくなるため、`atelier` bot の開発用接続先を維持する順序とする）。`monitoring-pwa/backend` の JWT-SVID 検証・複数 bot 対応実装（`config` / `domain` / `usecase` / `infra/spiffe` / `infra/realtime` / `adapter/slackapi`）・テスト/E2E 更新・`k8s/base/`（`secretKeyRef` 削除）・`k8s/overlays/preview/`（`echo-bot` 用 SA・`token-proxy` サイドカー・`BOT_USERS_JSON`）・`k8s/overlays/prod/`（静的トークン廃止・`BOT_USERS_JSON` 設定）を更新する。
    - ※ 安全な移行順序として、PR preview 環境で `echo-bot`（および `atelier` bot）↔ `monitoring-pwa` の JWT-SVID 認証を結合確認してから、`nuage-monitoring-stack` の PR をマージして本番 `secrets.yaml` から静的トークンを落とす。
 
@@ -546,12 +551,13 @@ AI は SOPS 操作および本番反映を行わない。以下は人間が実�
    ```
 3. **k8s 側（SPIRE / monitoring-pwa）の反映**:
    - `nuage-cluster` および `nuage-monitoring-stack` の PR を確認・マージすると、Argo CD が自動で同期する。
-4. **NixOS（`atelier`）への反映**:
+4. **NixOS（`atelier`）への反映・preview 用インスタンス切り替え**:
    - `nuage-cluster` の `master` へマージ後、`atelier` で `nixos-upgrade` を起動してユニット稼働を確認する（別リポジトリの flake input 更新がある場合は `nix flake update <input> --flake ./nix` を先に行う）。
    ```bash
    ssh atelier 'sudo systemctl start nixos-upgrade; journalctl -u nixos-upgrade -n 20 --no-pager -o cat'
    ssh atelier 'sudo systemctl status spire-agent monitoring-bot-proxy --no-pager'
    ```
+   - 特定の PR preview 環境へ繋ぎたい場合は、`nuage-cluster/nix/hosts/atelier/configuration.nix` の `previewPrNumber` オプションを対象 PR 番号へ更新して push・`nixos-upgrade` し、`monitoring-bot-proxy-preview.service`（`127.0.0.1:18092`）を起動する（不要時は `null` 等に戻す）。
 
 ---
 
@@ -567,8 +573,11 @@ AI は SOPS 操作および本番反映を行わない。以下は人間が実�
    - **失敗時の対処**: Agent が古い CA キャッシュを保持して再接続に失敗する場合は、Agent 側の `data_dir` を揮発領域にし再接続エラー時の自動再起動（または `ExecStartPre` でのバンドル初期化）で必ず再ブートストラップするようにする。
 3. **PSA `baseline` 環境における `csi.spiffe.io` インラインボリューム**:
    - **確認方法**: `nuage-monitoring-stack` の PR preview 環境（`pod-security.kubernetes.io/enforce: baseline`）で `csi.spiffe.io` ボリュームを持つ `echo-bot` Pod が Admission 拒否されず起動し、ソケット通信できるか確認する。
-4. **Socket Mode と環境別 `aud`・`chat.update` の実動作確認**:
-   - **確認方法**: `echo-bot` が `token-proxy`（`http://127.0.0.1:18090/slack/api/`）経由で `apps.connections.open` を呼び出し、返却された WebSocket URL へ直接接続してメンション応答が返ること、`invalid_auth` 時にリクエストが通らないこと、異なる環境の `aud`（例: preview 用 `aud` の JWT-SVID を本番 `monitoring-pwa` へ送信した場合）が拒否されること、および `chat.update` で他者の投稿更新が `cant_update_message` で拒否されることを確認する。
+4. **Socket Mode・preview 用プロキシ身元・環境別 `aud`・`chat.update` の実動作確認**:
+   - **確認方法**:
+     - `echo-bot` が `token-proxy`（`http://127.0.0.1:18090/slack/api/`）経由で `apps.connections.open` を呼び出し、返却された WebSocket URL へ直接接続してメンション応答が返ること、`invalid_auth` 時にリクエストが通らないことを確認する。
+     - `atelier` 上の本番用（`monitoring-bot-proxy.service`）と preview 用（`monitoring-bot-proxy-preview.service`）の両方が、`unix:user:monitoring-bot-proxy` セレクタの単一 `ClusterStaticEntry` からそれぞれの `SPIFFE_AUDIENCE` で JWT-SVID を取得できることを確認する。
+     - 異なる環境の `aud`（例: preview 用 `aud` の JWT-SVID を本番 `monitoring-pwa` へ送信した場合）が拒否されること、および `chat.update` で他者の投稿更新が `cant_update_message` で拒否されることを確認する。
 
 ---
 
