@@ -101,7 +101,7 @@ fi
 
 `target-dir` 配下の `.css` / `.tsx` / `.jsx`（既定で `*.test.*`, `*.spec.*`, `*.stories.*`, `*.config.*`, `*.d.ts`, `e2e/`, `mocks/`, `public/`, `.storybook/`, `tests/`, `node_modules/`, `.next/`, `dist/` 等を除外）を対象に、以下を自動検証する。
 
-- **CSS**: 生カラー直書き禁止（`color-no-hex`, `color-named`, `function-disallowed-list`）と `:hover` の `@media (hover: hover)` ラップ必須（`defensive-css/no-accidental-hover`）。`entry-css` を指定した場合は、そのファイルのみ `:root` トークン定義のため色ルールを除外する（`:hover` ガードは有効）。
+- **CSS**: 生カラー直書き禁止（`color-no-hex`, `color-named`, `function-disallowed-list`）と `:hover` ガード（`defensive-css/no-accidental-hover` により `@media (hover: ...)` 外の `:hover` を検出。`@media (hover: none)` の除外等の条件精査は [docs/ui-design.md](../../docs/ui-design.md) に基づきレビューで確認する）。`entry-css` を指定した場合は、そのファイルのみ `:root` トークン定義のため色ルールを除外する（`:hover` ガードは有効）。
 - **TSX / JSX**: `style={{ ... }}` インラインスタイル内の生カラー（`#hex`, `rgb(`, `rgba(`, `hsl(`, `hsla(`）および Tailwind 任意値カラークラス（`bg-[#...]` 等）の禁止。
 
 ※ `<style>{...}</style>` ブロック・JS 設定オブジェクト・エントリ CSS 基盤ガードレール・定性デザイン原則は [docs/ui-design.md](../../docs/ui-design.md) に基づきレビューで確認する。
@@ -148,6 +148,8 @@ fi
 [ -d "${UI_DIR}/node_modules" ] || npm ci --prefix "$UI_DIR"
 
 cd frontend
-ENTRY_CSS="app/globals.css" "${UI_DIR}/node_modules/.bin/stylelint" "**/*.css" --config "${UI_DIR}/stylelint.config.mjs" --allow-empty-input
-node "${UI_DIR}/check-tsx-colors.mjs"
+rc=0
+ENTRY_CSS="app/globals.css" "${UI_DIR}/node_modules/.bin/stylelint" "**/*.css" --config "${UI_DIR}/stylelint.config.mjs" --ignore-path "${UI_DIR}/.stylelintignore" --allow-empty-input || rc=$?
+node "${UI_DIR}/check-tsx-colors.mjs" || rc=$?
+exit "$rc"
 ```

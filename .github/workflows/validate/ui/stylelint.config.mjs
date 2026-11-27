@@ -4,6 +4,7 @@
  * - :hover ガード: @media (hover: hover) 外の :hover を禁止する
  * 例外は「stylelint-disable-next-line <rule>」でオプトアウトする。
  */
+import fs from "node:fs";
 import path from "node:path";
 import defensiveCss from "stylelint-plugin-defensive-css";
 
@@ -15,17 +16,27 @@ const DEFAULT_IGNORES = [
 ];
 const toPosix = (p) => p.split(path.sep).join("/");
 const parseList = (raw) => (raw ? raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean) : []);
+const escapeGlob = (s) => s.replace(/([*?[\](){}!,+@])/g, "[$1]");
 
-export function buildStylelintConfig({ cwd = process.cwd(), entryCss = process.env.ENTRY_CSS || "", excludes = parseList(process.env.EXCLUDE) } = {}) {
+export function buildStylelintConfig({ cwd = process.cwd(), repoRoot = process.env.REPO_ROOT || "", entryCss = process.env.ENTRY_CSS || "", excludes = parseList(process.env.EXCLUDE) } = {}) {
   const root = toPosix(path.resolve(cwd));
+  const rootGlob = escapeGlob(root);
   const ignoreFiles = [
-    ...DEFAULT_IGNORES.map((g) => `${root}/${g}`),
+    ...DEFAULT_IGNORES.map((g) => `${rootGlob}/${g}`),
     ...excludes.flatMap((raw) => {
       const p = toPosix(raw).replace(/^\.\//, "").replace(/\/+$/, "");
-      if (/[*?]/.test(p)) return p.includes("/") ? [`${root}/${p}`] : [`${root}/**/${p}`];
-      return p.includes("/") ? [`${root}/${p}`, `${root}/${p}/**`] : [`${root}/**/${p}/**`, `${root}/**/${p}`];
+      if (!/[*?]/.test(p)) return [`${rootGlob}/${escapeGlob(p)}`, `${rootGlob}/${escapeGlob(p)}/**`];
+      return p.includes("/") ? [`${rootGlob}/${p}`, `${rootGlob}/${p}/**`] : [`${rootGlob}/**/${p}`, `${rootGlob}/**/${p}/**`];
     }),
   ];
+  let entryOverrides = {};
+  if (entryCss) {
+    const candidates = path.isAbsolute(entryCss) ? [entryCss] : [path.resolve(root, entryCss), ...(repoRoot ? [path.resolve(repoRoot, entryCss)] : [])];
+    const found = candidates.find((c) => fs.existsSync(c) && fs.statSync(c).isFile());
+    if (!found) throw new Error(`Entry CSS file '${entryCss}' does not exist.`);
+    const files = [...new Set([escapeGlob(toPosix(found)), escapeGlob(toPosix(fs.realpathSync(found)))])];
+    entryOverrides = { overrides: [{ files, rules: { "color-no-hex": null, "color-named": null, "function-disallowed-list": null } }] };
+  }
   return {
     plugins: [defensiveCss],
     ignoreFiles,
@@ -35,7 +46,7 @@ export function buildStylelintConfig({ cwd = process.cwd(), entryCss = process.e
       "function-disallowed-list": ["rgb", "rgba", "hsl", "hsla"],
       "defensive-css/no-accidental-hover": true,
     },
-    ...(entryCss ? { overrides: [{ files: [toPosix(path.resolve(root, entryCss))], rules: { "color-no-hex": null, "color-named": null, "function-disallowed-list": null } }] } : {}),
+    ...entryOverrides,
   };
 }
 
