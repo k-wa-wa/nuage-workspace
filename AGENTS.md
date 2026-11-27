@@ -94,3 +94,4 @@ NixOS に効く変更 (nuage-cluster の `nix/`、flake input のリポジトリ
 
 - **Go バックエンド**: Go バックエンドの新規作成・改修を行うときは、[docs/backend-architecture.md](docs/backend-architecture.md) の標準に従う。
 - **Web UI / PWA**: Web UI および PWA の設計・実装を行うときは、[docs/ui-design.md](docs/ui-design.md) の標準に従う。
+- **サーバー間認証**: サービス間の認証・認可および SPIRE/SPIFFE の設計・実装を行うときは、[docs/service-auth.md](docs/service-auth.md) の標準に従う。
