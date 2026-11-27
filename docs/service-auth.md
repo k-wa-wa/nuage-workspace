@@ -74,7 +74,8 @@ Go バックエンドで JWT-SVID 検証を実装する場合は、`github.com/s
      - ソースコードを改修できない既製アプリケーション（既存バイナリや外部パッケージ等）に限って、ローカルループバック（`127.0.0.1:<port>`）で動くトークン付与プロキシを例外的に使ってよい。
      - ただしプロキシ方式を採る場合は、① `127.0.0.1` に接続できる同一ホスト内の他プロセスがプロキシの SPIFFE ID を使えてしまう点（必要に応じて OS ユーザー分離や `nftables` の `meta skuid` で制限する）、② Ingress 向けの `Host` ヘッダ書き換えが必要になる点、③ 宛先・`aud` ごとにプロキシインスタンスを分離する点に注意する。
 2. **短寿命・宛先限定**:
-   - JWT-SVID の有効期限（TTL）は数分（標準 **`5m`**）とし、`spiffe-helper` が `jwt_svids` 設定に基づいて期限前に自動でファイルを更新する（アトミック置換）。
+   - JWT-SVID の有効期限（TTL）は数分（標準 **`5m`**）とし、アトミック置換に対応した `spiffe-helper`（**v0.12.x 以上**。0.11.x 以前は `os.WriteFile` による非アトミック上書きのため推奨しない）が `jwt_svids` 設定に基づいて期限前に自動でファイルを更新する。
+   - あわせて送り側アプリでも、ファイル読み込み結果が空文字列や不正な形式（JWT の `.` 区切り 3 パートを満たさない等）であった場合は即座に送信せず、短時間待って再読み込みする防御を入れる。
    - `aud` は宛先サービス（環境を含む）ごとに一意に固定して別ファイルへ書き出す。異なる宛先や異なる環境（本番と preview 等）へ同じトークンファイルを使い回さない。
 3. **既存 SDK との互換（キャッシュ・再接続対策）**:
    - `slack_bolt` や `slack_sdk` 等のクライアントライブラリは起動時に渡したトークンをインスタンス内に保持することがあるため、静的に 1 回だけ読み込まない。
@@ -277,9 +278,9 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
   - SPIRE Agent の Workload API アクセス権は OS ユーザーや Pod 単位で付与される。bot 実行ユーザーへ Workload API ソケットを直接開放すると、同一ユーザーで動く他プロセス（atelier 上の別エージェント等）まで任意の `aud` の JWT-SVID を取得できてしまう。
   - ファイルを毎回読み込む方式であれば、言語・SDK 固有の SPIFFE ライブラリに依存しない。
 - **`spiffe-helper` の採用利点**:
-  - SPIFFE 公式ユーティリティである **`spiffe-helper`**（`github.com/spiffe/spiffe-helper`）が、`jwt_svids` 設定（`jwt_audience` と `jwt_svid_file_name`）に従って `aud` ごとに JWT-SVID を取得し、期限前にファイルをアトミック置換で自動更新する。
+  - SPIFFE 公式ユーティリティである **`spiffe-helper`**（`github.com/spiffe/spiffe-helper`）が、`jwt_svids` 設定（`jwt_audience` と `jwt_svid_file_name`）に従って `aud` ごとに JWT-SVID を取得し、期限前にファイルを自動更新する。
   - Kubernetes サイドカー向けには組み込みの `health_checks` HTTP エンドポイント（`/live`・`/ready`）を持ち、`nuage-workspace` の `probes.rego` ポリシー要件も単体で満たせる。
-  - バージョンは必ず固定して利用する（NixOS は flake pin された `pkgs.spiffe-helper`、Kubernetes サイドカーは `ghcr.io/spiffe/spiffe-helper:0.12.4` 等の固定タグ）。
+  - **バージョンは v0.12.4 以上に固定して利用する**: `spiffe-helper` v0.11.0 以前は `os.WriteFile` による上書きであり更新瞬間にファイルが空・不完全になるおそれがある。一時ファイルへの書き込みと `rename` によるアトミック置換が行われる **v0.12 系（例: `0.12.4`）** を k8s サイドカー・atelier 双方で統一使用する。
 
 #### 4.2. 置き場所と配置方針
 
@@ -287,7 +288,7 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 
 | 対象環境 | 成果物・利用パッケージ | 配置・権限・役割 |
 | :--- | :--- | :--- |
-| atelier（NixOS） | nixpkgs の `pkgs.spiffe-helper` と NixOS モジュール（例: `nuage-cluster/nix/modules/spiffe-jwt-helper.nix`） | 専用の非特権 OS ユーザー `monitoring-bot-token` で systemd サービス（`monitoring-bot-token.service` 等）を実行する。JWT ファイルは `0640` で書き出し、bot 実行ユーザー（`nuage-cluster/nix/hosts/atelier/configuration.nix` の `programs.autopilot5.user = "nixos"`）だけが読めるグループ権限で保護する。 |
+| atelier（NixOS） | `spiffe-helper` **v0.12.4 以上**（nixpkgs の `pkgs.spiffe-helper` が `0.11.0` 等の 0.12 未満であれば、`buildGoModule` やバージョン上書きで `0.12.4` へ固定する）と NixOS モジュール（例: `nuage-cluster/nix/modules/spiffe-jwt-helper.nix`） | 専用の非特権 OS ユーザー `monitoring-bot-token` で systemd サービス（`monitoring-bot-token.service` 等）を実行する。JWT ファイルは `0640` で書き出し、bot 実行ユーザー（`nuage-cluster/nix/hosts/atelier/configuration.nix` の `programs.autopilot5.user = "nixos"`）だけが読めるグループ権限で保護する。 |
 | preview `echo-bot`（k8s Pod） | 公式コンテナイメージ `ghcr.io/spiffe/spiffe-helper:0.12.4`（タグ固定） | `echo-bot` Pod のサイドカーコンテナとして動かし、共有の `emptyDir`（`medium: Memory`）へ JWT ファイルを書き出す。`echo-bot` コンテナはその共有ボリュームを `readOnly: true` でマウントして読む。 |
 
 #### 4.3. `spiffe-helper` の設定項目と両環境での値
@@ -324,10 +325,11 @@ atelier の bot と preview の `echo-bot` は、送り側の接続設定を以�
 | `SLACK_APP_TOKEN_FILE` | `apps.connections.open` 時に毎回読む JWT ファイル（bot 用と同ファイル可） | 同上 | `/run/spiffe/jwt/monitoring-pwa.jwt` |
 
 - `SLACK_BOT_TOKEN_FILE` / `SLACK_APP_TOKEN_FILE` が設定されている場合、アプリは API 呼び出し・接続のたびにファイルを読み、`SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` より優先して `Authorization: Bearer <JWT-SVID>` を付与して宛先を直接呼ぶ。
+  - **読み取り競合の防御**: 万一ファイル更新の瞬間に空値または JWT 形式不正（`.` 区切り 3 パートを満たさない等）を読み取った場合は、即座にリクエストを送らず短時間（例: 数十ミリ秒、最大数回）待って読み直す。
 - **atelier における信頼の境界**:
-  - SPIRE の `unix` workload attestor（`unix:user:monitoring-bot-token`）は `spiffe-helper` プロセスの実行ユーザーを証明し、Workload API へのアクセスを `monitoring-bot-token` ユーザーだけに限定する。
-  - 書き出された JWT ファイルを読めるのは、bot を動かす `nixos` ユーザーのプロセスである。atelier の bot はエージェント CLI のログインを使うため他のエージェントと同じ `nixos` ユーザーで動く見込みであり、実質的な信頼境界は **「`nixos` ユーザーのプロセス」** となる。
-  - これは旧プロキシ方式の「`127.0.0.1` に接続できるローカルプロセス全般」より狭く、かつ `nixos` ユーザー配下のプロセスが Workload API を直接叩いて任意の `aud` の JWT-SVID を作ることも防止できる。
+  - SPIRE の `unix` workload attestor（`unix:user:monitoring-bot-token`）は `spiffe-helper` プロセスの実行ユーザーを証明し、通常権限の他プロセスから Workload API ソケットへの直接接続を遮断する。
+  - 書き出された JWT ファイルを読めるのは、bot を動かす `nixos` ユーザーのプロセスである。atelier の bot はエージェント CLI のログインを使うため他のエージェントと同じ `nixos` ユーザーで動く見込みであり、通常権限でのファイルアクセス境界は **「`nixos` ユーザーのプロセス」** となる。これは旧プロキシ方式の「`127.0.0.1` に接続できるローカルプロセス全般」より狭い。
+  - ただし現状の `atelier` では `nixos` ユーザーが `wheel` グループに所属しパスワードなし `sudo`（`security.sudo.wheelNeedsPassword = false`）が有効であるため、特権昇格を含めた実質的な信頼境界は `atelier` の `root` 相当となる（ユーザー分離の効果は通常稼働時の誤操作・直接利用を防ぐ範囲にとどまる）。
 
 #### 4.5. Socket Mode の WebSocket 接続方式（確定仕様）
 
@@ -351,7 +353,7 @@ atelier の bot と preview の `echo-bot` は、送り側の接続設定を以�
   - `SLACK_BOT_TOKEN_FILE` / `SLACK_APP_TOKEN_FILE`: `/run/monitoring-bot-token/monitoring-pwa.jwt`（同じファイルでよい）。設定時は API 呼び出し・接続のたびに読み込み、`SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` より優先する。
 - **開発中の接続先と移行**:
   - Step 2 が `nuage-monitoring-stack` にマージされる前は、従来どおり preview の静的トークン（`https://monitoring-pr-<N>.wpcapp.net/slack/api/`）で進める。
-  - Step 1-B および Step 2 マージ後の通常開発は、本番 URL（`https://monitoring.wpcapp.net/slack/api/`）と本番 JWT ファイル（`/run/monitoring-bot-token/monitoring-pwa.jwt`）へ接続する（開いている PR が無い期間もそのまま開発できる）。
+  - Step 1-C および Step 2 マージ後の通常開発は、本番 URL（`https://monitoring.wpcapp.net/slack/api/`）と本番 JWT ファイル（`/run/monitoring-bot-token/monitoring-pwa.jwt`）へ接続する（開いている PR が無い期間もそのまま開発できる）。
   - 特定の開いている PR preview 環境へ繋いで検証したい場合のみ、`nuage-cluster/nix/hosts/atelier/configuration.nix` のオプション（例: `previewPrNumber = <N>;`）を設定して `nixos-upgrade` で preview 用 JWT ファイル（`/run/monitoring-bot-token/monitoring-pwa-preview.jwt`、`aud=monitoring-pwa.nuage-monitoring-stack-pr-<N>`）を出力させ、bot 側の `SLACK_API_BASE_URL` を `https://monitoring-pr-<N>.wpcapp.net/slack/api/`、`SLACK_*_TOKEN_FILE` を `/run/monitoring-bot-token/monitoring-pwa-preview.jwt` に向ける（`ClusterStaticEntry` は `unix:user:monitoring-bot-token` のまま変更不要）。
 
 ---
@@ -546,12 +548,13 @@ atelier の bot と preview の `echo-bot` は、送り側の接続設定を以�
 
 #### 7.1. リポジトリごとの作業分担と実施順序
 
-並行作業も可能だが、実機結合テストは **Step 1（nuage-cluster 基盤）→ 人間手順（SSH CA・署名）→ Step 1-B（nuage-cluster atelier 有効化）→ Step 2（nuage-monitoring-stack 改修）** の順で収束させる（旧設計の自作プロキシ作成は不要である）。
+並行作業も可能だが、実機結合テストは **Step 1-B（`nuage-cluster` 基盤）→ 人間手順（SSH CA・署名）→ Step 1-C（`nuage-cluster` atelier 有効化）→ Step 2（`nuage-monitoring-stack` 改修）** の順で収束させる（並行実装リポジトリの計画との整合を保つため、旧設計の **Step 1-A は廃止** とし、Step 1-B 以降の番号は維持する）。
 
-1. **Step 1-A（`nuage-cluster`）**: `manifests/apps/spire/`（SPIRE Server / Agent / CSI Driver / OIDC Discovery Provider / Cilium TLS passthrough Ingress / `ClusterSPIFFEID`）・`manifests/apps/preview-network-policy.yaml` 更新・`scripts/gen-host-keys.sh`（または `sign-host-keys.sh`）署名機能追加・`nix/modules/spire-agent.nix` および `spiffe-helper` 用 NixOS モジュール作成。
-2. **人間作業（Step 1-A と Step 1-B の間）**: SSH CA 鍵生成・SOPS 格納・`atelier` ホスト鍵への署名・CA 公開鍵と署名済み証明書のコミット・push（詳細は 7.2 節）。
-3. **Step 1-B（`nuage-cluster`）**: `ClusterStaticEntry`（`parentID: "spiffe://nuage/spire/agent/sshpop/atelier"`、`selectors: ["unix:user:monitoring-bot-token"]`）を追加して `spire-server agent list` で一致を確かめ、`nix/hosts/atelier/configuration.nix` で `spire-agent` と `spiffe-helper`（`User=monitoring-bot-token` で本番 JWT ファイル `/run/monitoring-bot-token/monitoring-pwa.jwt` を常時生成、オプション `previewPrNumber` 指定時は preview 用 JWT ファイルも生成）を有効化し、push 後に人間が `nixos-upgrade` を実行する。
-4. **Step 2（`nuage-monitoring-stack`）**: **Step 1（`atelier` を含む SPIRE 基盤稼働）が完了した後に実行・マージする**（Step 2 マージ以降は preview も静的トークンを受け付けなくなるため、`atelier` bot の開発用接続先を維持する順序とする）。`monitoring-pwa/backend` の JWT-SVID 検証・複数 bot 対応実装（`config` / `domain` / `usecase` / `infra/spiffe` / `infra/realtime` / `adapter/slackapi`）・`echo-bot` のトークンファイル読み込み対応（`SLACK_BOT_TOKEN_FILE` / `SLACK_APP_TOKEN_FILE`・`authorize` フック・再接続時の再読み込み）・テスト/E2E 更新・`k8s/base/`（`secretKeyRef` 削除）・`k8s/overlays/preview/`（`echo-bot` 用 SA・`spiffe-helper` サイドカー・init コンテナ・`BOT_USERS_JSON`）・`k8s/overlays/prod/`（静的トークン廃止・`BOT_USERS_JSON` 設定）を更新する。
+1. **Step 1-A（廃止）**: 旧設計の自作トークン付与プロキシ（`spiffe-token-proxy`）の実装・コンテナイメージビルド・Nix パッケージ化は不要となり廃止した。
+2. **Step 1-B（`nuage-cluster`）**: `manifests/apps/spire/`（SPIRE Server / Agent / CSI Driver / OIDC Discovery Provider / Cilium TLS passthrough Ingress / `ClusterSPIFFEID`）・`manifests/apps/preview-network-policy.yaml` 更新・`scripts/gen-host-keys.sh`（または `sign-host-keys.sh`）署名機能追加・`nix/modules/spire-agent.nix` および `spiffe-helper`（v0.12.4 以上）用 NixOS モジュール作成。
+3. **人間作業（Step 1-B と Step 1-C の間）**: SSH CA 鍵生成・SOPS 格納・`atelier` ホスト鍵への署名・CA 公開鍵と署名済み証明書のコミット・push（詳細は 7.2 節）。
+4. **Step 1-C（`nuage-cluster`）**: `ClusterStaticEntry`（`parentID: "spiffe://nuage/spire/agent/sshpop/atelier"`、`selectors: ["unix:user:monitoring-bot-token"]`）を追加して `spire-server agent list` で一致を確かめ、`nix/hosts/atelier/configuration.nix` で `spire-agent` と `spiffe-helper`（`User=monitoring-bot-token` で本番 JWT ファイル `/run/monitoring-bot-token/monitoring-pwa.jwt` を常時生成、オプション `previewPrNumber` 指定時は preview 用 JWT ファイルも生成）を有効化し、push 後に人間が `nixos-upgrade` を実行する。
+5. **Step 2（`nuage-monitoring-stack`）**: **Step 1（`atelier` を含む SPIRE 基盤稼働）が完了した後に実行・マージする**（Step 2 マージ以降は preview も静的トークンを受け付けなくなるため、`atelier` bot の開発用接続先を維持する順序とする）。`monitoring-pwa/backend` の JWT-SVID 検証・複数 bot 対応実装（`config` / `domain` / `usecase` / `infra/spiffe` / `infra/realtime` / `adapter/slackapi`）・`echo-bot` のトークンファイル読み込み対応（`SLACK_BOT_TOKEN_FILE` / `SLACK_APP_TOKEN_FILE`・`authorize` フック・再接続時の再読み込み）・テスト/E2E 更新・`k8s/base/`（`secretKeyRef` 削除）・`k8s/overlays/preview/`（`echo-bot` 用 SA・`spiffe-helper` サイドカー・init コンテナ・`BOT_USERS_JSON`）・`k8s/overlays/prod/`（静的トークン廃止・`BOT_USERS_JSON` 設定）を更新する。
    - ※ 安全な移行順序として、PR preview 環境で `echo-bot`（および `atelier` bot）↔ `monitoring-pwa` の JWT-SVID 認証を結合確認してから、`nuage-monitoring-stack` の PR をマージして本番 `secrets.yaml` から静的トークンを落とす。
 
 #### 7.2. 人間が行う手順（SOPS・署名・反映）
