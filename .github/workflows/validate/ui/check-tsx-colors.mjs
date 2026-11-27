@@ -18,6 +18,7 @@ const RAW_COLOR_RE = /(?:^|[^a-zA-Z0-9_-])(#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-
 const URL_HASH_RE = /url\s*\(\s*["']?#[^)]*\)/gi;
 const TW_COLOR_RE = /(?:^|[\s"'`:!])((?:bg|text|border(?:-[trblxyse])?|fill|stroke|from|via|to|ring(?:-offset)?|outline|decoration|accent|caret|shadow|divide|placeholder|stop)-\[(?:color:)?(?:#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})|(?:rgba?|hsla?)\([^\]\n]*\))\])/gi;
 const JSX_PRE_IDENT = new Set(["return", "default", "await", "yield", "throw", "case", "else", "typeof", "void", "delete", "in", "of"]);
+const STMT_KW = new Set(["const", "let", "var", "return", "default", "export", "function", "if", "else", "for", "while", "switch", "case", "throw", "try", "catch", "finally", "type", "interface"]);
 const CLASS_HELPERS = new Set(["cn", "clsx", "cx", "twMerge", "twJoin", "cva"]);
 const CLASS_IDENT_RE = /(?:^|[-_])class(?:Name|es|List)?$|[a-z0-9]Class(?:Name|es|List)?$/;
 export const toPosix = (p) => p.split(path.sep).join("/");
@@ -52,6 +53,15 @@ export function scanTsxColors(src, file) {
     if (inClass) for (const m of text.matchAll(TW_COLOR_RE)) hits.push({ ...loc(a + m.index + (m[0].length - m[1].length)), message: `Unexpected Tailwind arbitrary color class "${m[1]}".` });
     if (inStyle) for (const m of text.replace(URL_HASH_RE, (s) => " ".repeat(s.length)).matchAll(RAW_COLOR_RE)) hits.push({ ...loc(a + m.index + (m[0].length - m[1].length)), message: `Unexpected raw color "${m[1].trim()}" in inline style.` });
   };
+  const nextNonWs = (from) => {
+    for (let k = from; k < src.length;) {
+      if (/\s/.test(src[k])) { k += 1; continue; }
+      if (src[k] === "/" && src[k + 1] === "/") { const nl = src.indexOf("\n", k + 2); k = nl === -1 ? src.length : nl + 1; continue; }
+      if (src[k] === "/" && src[k + 1] === "*") { const c = src.indexOf("*/", k + 2); k = c === -1 ? src.length : c + 2; continue; }
+      return src[k];
+    }
+    return "";
+  };
   const stack = [{ type: "js", canRegex: true, canJsx: true }];
   const top = () => stack[stack.length - 1];
   const hasStyle = () => stack.some((f) => f.inStyle), hasClass = () => stack.some((f) => f.inClass || f.assignClass);
@@ -80,7 +90,11 @@ export function scanTsxColors(src, file) {
       } else { if (!/\s/.test(ch)) codeLines.add(lineOf(i)); i += 1; }
       continue;
     }
-    if (/\s/.test(ch)) { ctx.tagHeader = false; i += 1; continue; }
+    if (/\s/.test(ch)) {
+      ctx.tagHeader = false;
+      if (ch === "\n" && ctx.type === "js" && ctx.assignClass && ctx.exprComplete && !".?:+&|,)]}".includes(nextNonWs(i + 1) || ";")) ctx.assignClass = false;
+      i += 1; continue;
+    }
     if (ch === "/" && src[i + 1] === "/") { const nl = src.indexOf("\n", i + 2), end = nl === -1 ? src.length : nl; recordComment(i, end); i = end; continue; }
     if (ch === "/" && src[i + 1] === "*") { const c = src.indexOf("*/", i + 2), end = c === -1 ? src.length : c + 2; recordComment(i, end); i = end; continue; }
     if (ch === "\"" || ch === "'") {
@@ -88,25 +102,28 @@ export function scanTsxColors(src, file) {
       markCode(i, Math.min(j + 1, src.length));
       scanStr(i + 1, j, hasStyle(), hasClass() || Boolean(ctx.pendingClass));
       ctx.pendingClass = ctx.pendingStyle = ctx.expectStyle = ctx.pendingCallClass = ctx.canRegex = ctx.canJsx = false;
-      i = Math.min(j + 1, src.length); continue;
+      ctx.exprComplete = true; i = Math.min(j + 1, src.length); continue;
     }
     if (ch === "`") {
       markCode(i, i + 1);
       ctx.pendingClass = ctx.pendingStyle = ctx.expectStyle = ctx.pendingCallClass = ctx.canRegex = ctx.canJsx = false;
-      i = scanTpl(i + 1); continue;
+      i = scanTpl(i + 1); top().exprComplete = true; continue;
     }
     if (ctx.type === "jsx-tag") {
       if (ctx.tagHeader && ch === "<") {
         let j = i + 1, d = 1;
         while (j < src.length && d > 0) {
           if (src[j] === "\"" || src[j] === "'") { const q = src[j++]; while (j < src.length && src[j] !== q) j += src[j] === "\\" ? 2 : 1; j += 1; }
+          else if (src[j] === "/" && src[j + 1] === "/") { const nl = src.indexOf("\n", j + 2); j = nl === -1 ? src.length : nl + 1; }
+          else if (src[j] === "/" && src[j + 1] === "*") { const c = src.indexOf("*/", j + 2); j = c === -1 ? src.length : c + 2; }
+          else if (src[j] === "=" && src[j + 1] === ">") { j += 2; }
           else { if (src[j] === "<") d += 1; else if (src[j] === ">") d -= 1; j += 1; }
         }
         markCode(i, j); ctx.tagHeader = false; i = j; continue;
       }
       if (ctx.tagHeader && /[A-Za-z0-9_$.]/.test(ch)) { markCode(i, i + 1); i += 1; continue; }
       ctx.tagHeader = false;
-      if (ch === "/" && src[i + 1] === ">") { markCode(i, i + 2); stack.pop(); i += 2; }
+      if (ch === "/" && src[i + 1] === ">") { markCode(i, i + 2); stack.pop(); if (top().type === "js") top().exprComplete = true; i += 2; }
       else if (ch === ">") { markCode(i, i + 1); ctx.type = "jsx-text"; i += 1; }
       else if (ch === "{") { markCode(i, i + 1); stack.push({ type: "js", inClass: Boolean(ctx.pendingClass), expectStyle: Boolean(ctx.pendingStyle), canRegex: true, canJsx: true }); ctx.pendingStyle = ctx.pendingClass = false; i += 1; }
       else if (/[A-Za-z_$-]/.test(ch)) {
@@ -122,33 +139,38 @@ export function scanTsxColors(src, file) {
     if (ch === "/" && ctx.canRegex) {
       let j = i + 1, cls = false;
       while (j < src.length && src[j] !== "\n") { if (src[j] === "\\") { j += 2; continue; } if (src[j] === "[") cls = true; else if (src[j] === "]") cls = false; else if (src[j] === "/" && !cls) { j += 1; break; } j += 1; }
-      markCode(i, j); ctx.canRegex = ctx.canJsx = ctx.expectStyle = ctx.pendingCallClass = false; i = j; continue;
+      markCode(i, j); ctx.canRegex = ctx.canJsx = ctx.expectStyle = ctx.pendingCallClass = false; ctx.exprComplete = true; i = j; continue;
     }
-    if (ch === "(") { markCode(i, i + 1); stack.push({ type: "js", paren: true, inClass: Boolean(ctx.pendingCallClass), canRegex: true, canJsx: true }); ctx.pendingCallClass = ctx.expectStyle = false; i += 1; continue; }
-    if (ch === ")") { markCode(i, i + 1); if (ctx.paren && stack.length > 1) stack.pop(); top().canRegex = top().canJsx = false; i += 1; continue; }
-    if (ch === "{") { markCode(i, i + 1); stack.push({ type: "js", inStyle: Boolean(ctx.expectStyle), canRegex: true, canJsx: true }); ctx.expectStyle = ctx.pendingCallClass = false; i += 1; continue; }
+    if (ch === "(" || ch === "[") {
+      markCode(i, i + 1);
+      stack.push({ type: "js", delim: ch === "(" ? ")" : "]", inClass: ch === "(" ? Boolean(ctx.pendingCallClass) : Boolean(ctx.assignClass), canRegex: true, canJsx: true });
+      ctx.pendingCallClass = ctx.expectStyle = ctx.exprComplete = false; i += 1; continue;
+    }
+    if (ch === ")" || ch === "]") { markCode(i, i + 1); if (ctx.delim === ch && stack.length > 1) stack.pop(); top().canRegex = top().canJsx = false; top().exprComplete = true; i += 1; continue; }
+    if (ch === "{") { markCode(i, i + 1); stack.push({ type: "js", inStyle: Boolean(ctx.expectStyle), inClass: Boolean(ctx.assignClass), canRegex: true, canJsx: true }); ctx.expectStyle = ctx.pendingCallClass = ctx.exprComplete = false; i += 1; continue; }
     if (ch === "}") {
       if (!(ctx.jsxComment && src.slice(0, i).trimEnd().endsWith("*/"))) markCode(i, i + 1);
       if (stack.length > 1) stack.pop();
-      if (top().type === "tpl") { stack.pop(); i = scanTpl(i + 1); continue; }
-      if (top().type === "js") top().canRegex = top().canJsx = false;
+      if (top().type === "tpl") { stack.pop(); i = scanTpl(i + 1); top().exprComplete = true; continue; }
+      if (top().type === "js") { top().canRegex = top().canJsx = false; top().exprComplete = true; }
       i += 1; continue;
     }
     if (ch === "<" && ctx.canJsx && (src[i + 1] === ">" || (/^[A-Za-z_$]/.test(src[i + 1] || "") && !/^[A-Za-z_$][\w$]*\s*(?:,|extends\b)/.test(src.slice(i + 1, i + 40))))) {
-      markCode(i, i + 1); stack.push({ type: "jsx-tag", tagHeader: true }); ctx.canRegex = ctx.canJsx = ctx.expectStyle = ctx.pendingCallClass = false; i += 1; continue;
+      markCode(i, i + 1); stack.push({ type: "jsx-tag", tagHeader: true }); ctx.canRegex = ctx.canJsx = ctx.expectStyle = ctx.pendingCallClass = ctx.exprComplete = false; i += 1; continue;
     }
-    if (ch === "=" && src[i + 1] === ">") { markCode(i, i + 2); ctx.canRegex = ctx.canJsx = true; ctx.expectStyle = ctx.pendingCallClass = false; i += 2; continue; }
+    if (ch === "=" && src[i + 1] === ">") { markCode(i, i + 2); ctx.canRegex = ctx.canJsx = true; ctx.expectStyle = ctx.pendingCallClass = ctx.exprComplete = false; i += 2; continue; }
     if (/[A-Za-z_$]/.test(ch)) {
       const ident = /^[A-Za-z0-9_$]+/.exec(src.slice(i))[0], rest = src.slice(i + ident.length);
       markCode(i, i + ident.length);
+      if (STMT_KW.has(ident)) ctx.assignClass = false;
       ctx.pendingCallClass = CLASS_HELPERS.has(ident) && /^\s*\(/.test(rest);
       if (CLASS_IDENT_RE.test(ident) && /^\s*(?:=(?!=)|:(?!:))/.test(rest)) ctx.assignClass = true;
-      ctx.canRegex = ctx.canJsx = JSX_PRE_IDENT.has(ident); ctx.expectStyle = false; i += ident.length; continue;
+      ctx.canRegex = ctx.canJsx = JSX_PRE_IDENT.has(ident); ctx.exprComplete = !ctx.canJsx; ctx.expectStyle = false; i += ident.length; continue;
     }
-    if (/[0-9]/.test(ch)) { const n = /^[0-9a-zA-ZxXoObBn._]+/.exec(src.slice(i))[0]; markCode(i, i + n.length); ctx.canRegex = ctx.canJsx = ctx.expectStyle = ctx.pendingCallClass = false; i += n.length; continue; }
+    if (/[0-9]/.test(ch)) { const n = /^[0-9a-zA-ZxXoObBn._]+/.exec(src.slice(i))[0]; markCode(i, i + n.length); ctx.canRegex = ctx.canJsx = ctx.expectStyle = ctx.pendingCallClass = false; ctx.exprComplete = true; i += n.length; continue; }
     markCode(i, i + 1);
     if (ch === ";" || ch === ",") ctx.assignClass = false;
-    ctx.canRegex = ctx.canJsx = "([{:;,=?&|!+-*%^~".includes(ch); ctx.expectStyle = ctx.pendingCallClass = false; i += 1;
+    ctx.canRegex = ctx.canJsx = "([{:;,=?&|!+-*%^~".includes(ch); ctx.expectStyle = ctx.pendingCallClass = ctx.exprComplete = false; i += 1;
   }
   return hits.filter((h) => !(h.pos < (trailingIgnore.get(h.line) ?? -1)) && !(commentIgnoreLines.has(h.line - 1) && !codeLines.has(h.line - 1))).map(({ pos: _, ...rest }) => ({ file, ...rest }));
 }

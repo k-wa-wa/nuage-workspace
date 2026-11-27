@@ -147,9 +147,9 @@ if [ ! -d "${UI_DIR}" ]; then
 fi
 [ -d "${UI_DIR}/node_modules" ] || npm ci --prefix "$UI_DIR"
 
-cd frontend
-rc=0
-ENTRY_CSS="app/globals.css" "${UI_DIR}/node_modules/.bin/stylelint" "**/*.css" --config "${UI_DIR}/stylelint.config.mjs" --ignore-path "${UI_DIR}/.stylelintignore" --allow-empty-input || rc=$?
-node "${UI_DIR}/check-tsx-colors.mjs" || rc=$?
-exit "$rc"
+(
+  export REPO_ROOT="$PWD" TARGET_DIR="frontend" ENTRY_CSS="app/globals.css"
+  cd -- "$UI_DIR"
+  node ./lint.mjs
+)
 ```

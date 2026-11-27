@@ -10,20 +10,37 @@ import { buildStylelintConfig } from "./stylelint.config.mjs";
 import { collectUiFiles, parseList, scanTsxColors, toPosix } from "./check-tsx-colors.mjs";
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
+const isWithin = (child, parent) => {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+};
 
 export async function runUiLint({
   targetDir = process.env.TARGET_DIR || ".",
-  repoRoot = process.env.REPO_ROOT || process.cwd(),
+  repoRoot = process.env.REPO_ROOT || "",
   entryCss = process.env.ENTRY_CSS || "",
   excludes = parseList(process.env.EXCLUDE),
 } = {}) {
-  const root = path.resolve(repoRoot || process.cwd(), targetDir);
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error(`Target directory '${targetDir}' does not exist.`);
-  const config = buildStylelintConfig({ cwd: root, repoRoot, entryCss, excludes });
+  const base = path.resolve(repoRoot || process.cwd());
+  if (!fs.existsSync(base) || !fs.statSync(base).isDirectory()) throw new Error(`Repository root '${repoRoot}' does not exist.`);
+  const targetCand = path.resolve(base, targetDir);
+  if (!fs.existsSync(targetCand) || !fs.statSync(targetCand).isDirectory()) throw new Error(`Target directory '${targetDir}' does not exist.`);
+  const root = fs.realpathSync(targetCand);
+  const boundary = repoRoot ? fs.realpathSync(base) : root;
+  if (!isWithin(root, boundary)) throw new Error(`Target directory '${targetDir}' escapes repository root.`);
+
+  let entryReal = "";
+  if (entryCss) {
+    const candidates = path.isAbsolute(entryCss) ? [entryCss] : [path.resolve(root, entryCss), ...(repoRoot ? [path.resolve(boundary, entryCss)] : [])];
+    const found = candidates.find((c) => fs.existsSync(c) && fs.statSync(c).isFile());
+    if (!found) throw new Error(`Entry CSS file '${entryCss}' does not exist.`);
+    entryReal = fs.realpathSync(found);
+    if (!isWithin(entryReal, boundary)) throw new Error(`Entry CSS file '${entryCss}' escapes repository root.`);
+  }
+
+  const config = buildStylelintConfig({ cwd: root, entryFile: entryReal, excludes, useIgnoreFiles: false });
   const { cssFiles, tsxFiles } = collectUiFiles(root, excludes);
-  const entryPath = config.overrides?.[0]?.files?.[0] ? path.resolve(root, entryCss) : null;
-  const resolvedEntry = entryPath && fs.existsSync(entryPath) ? fs.realpathSync(entryPath) : (entryCss ? fs.realpathSync(path.isAbsolute(entryCss) ? entryCss : [path.resolve(root, entryCss), path.resolve(repoRoot || process.cwd(), entryCss)].find((c) => fs.existsSync(c))) : null);
-  const allCss = [...new Set([...cssFiles.map((f) => fs.realpathSync(f)), ...(resolvedEntry ? [resolvedEntry] : [])])].sort();
+  const allCss = [...new Set([...cssFiles.map((f) => fs.realpathSync(f)), ...(entryReal ? [entryReal] : [])])].sort();
   const toRel = (f) => toPosix(path.relative(root, f)) || path.basename(f);
   const violations = [];
 
