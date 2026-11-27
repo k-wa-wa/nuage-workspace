@@ -44,7 +44,8 @@ Trust Domain は **`nuage`** に統一する。
 2. **有効期限検証（`exp` / `nbf`）**:
    - `exp` が過ぎていないこと、`nbf` が未来すぎないことを検証する（クロックスキュー許容は 30 秒以内とする）。
 3. **対象者検証（`aud`）**:
-   - `aud` クレームに「受け側自身のサービス識別子」（例: `monitoring-pwa`）が含まれることを検証する。他サービス向けのトークン流用を許さない。
+   - `aud` クレームに「受け側自身のサービス識別子」が含まれることを検証する。他サービス向けのトークン流用を許さない。
+   - **受け側の `aud` は環境（デプロイ先）ごとに一意にする**（例: 本番 `monitoring-pwa`、preview `nuage-monitoring-stack-pr-42`）。信頼度の低い環境（preview 等）と本番で同じ `aud` を使わない（preview 側コードが受け取った JWT-SVID を本番へ流用するのを防ぐため）。
 4. **呼び出し元認可（`sub` 許可リスト）**:
    - `sub` クレーム（呼び出し元の SPIFFE ID）が、**git で宣言された許可リスト**（必要に応じてロールやアプリ内ユーザー ID との対応表を含む）に完全一致することを検証する。
    - 許可リストが未設定または空の状態で起動した場合はエラーとして起動を止める。
@@ -70,7 +71,7 @@ Go バックエンドで JWT-SVID 検証を実装する場合は、`github.com/s
    - プロキシは自身のプロセス（systemd ユニットや Pod のコンテナ）の SPIFFE ID を証明するものであり、ローカルループバック越しの呼び出し元プロセス自体は区別しない。同一ホスト上で別用途のプロセスが同居する場合は、OS ユーザー分離やローカルファイアウォール（`nftables` の `meta skuid` 等）による呼び出し元制限を検討する。
 2. **短寿命・宛先限定**:
    - JWT-SVID の有効期限（TTL）は数分（標準 **`5m`**）とし、プロキシが Workload API 経由で自動更新する。
-   - `aud` はプロキシ設定で宛先サービスごとに固定し、異なる宛先へ同じトークンを使い回さない。
+   - `aud` はプロキシ設定で宛先サービス（環境を含む）ごとに固定し、異なる宛先や異なる環境（本番と preview 等）へ同じトークンおよび同じプロキシインスタンスを使い回さない。
 3. **既存 SDK との互換**:
    - Slack SDK 等の既存クライアントが非空のトークン文字列を必須とする場合は、ダミー文字列（例: `xoxb-spiffe`、`xapp-spiffe`）を渡す。通信時にプロキシが本物の JWT-SVID で `Authorization` ヘッダを上書きするため、ダミー値が受け側で認可に使われることはない。
 
@@ -278,20 +279,22 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 | Go ソースコード・`Dockerfile` | `nuage-cluster/tools/spiffe-token-proxy/`（`go.mod`, `main.go`, `*_test.go`, `Dockerfile`） |
 | コンテナイメージ | `ghcr.io/k-wa-wa/nuage-cluster-spiffe-token-proxy:latest`（`nuage-cluster/.github/workflows/docker-build-push.yml` から `nuage-workspace` 共通 workflow を呼び出してビルド・Trivy スキャン・push） |
 | Nix パッケージ | `nuage-cluster/nix/pkgs/spiffe-token-proxy/default.nix`（`buildGoModule`）、`nix/flake.nix` の `packages.x86_64-linux.spiffe-token-proxy` として公開 |
-| NixOS サービスモジュール | `nuage-cluster/nix/modules/spiffe-token-proxy.nix`（`nix/hosts/atelier/` で `monitoring-bot-proxy.service` として有効化） |
+| NixOS サービスモジュール | `nuage-cluster/nix/modules/spiffe-token-proxy.nix`（複数インスタンス定義可能なモジュールとし、`nix/hosts/atelier/` で本番向け `monitoring-bot-proxy.service` を有効化する） |
 
 #### 4.3. プロキシの振る舞いと設定項目
 
 プロキシは以下の環境変数で動作する。必須項目のいずれかが欠落・不正な場合は既定値で続行せず起動エラーで終了する。
 
-| 設定項目 | 環境変数名 | 必須 | 説明・既定動作 | atelier での設定値 | preview `echo-bot` での設定値 |
+| 設定項目 | 環境変数名 | 必須 | 説明・既定動作 | atelier（本番用）での設定値 | preview `echo-bot` での設定値 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | 待ち受けアドレス | `PROXY_LISTEN_ADDR` | 必須 | 平文 HTTP 待ち受け先（必ず `127.0.0.1:<port>`） | `127.0.0.1:18090` | `127.0.0.1:18090` |
 | ヘルスチェック用アドレス | `HEALTH_LISTEN_ADDR` | 任意 | `/healthz` のみを返す管理用アドレス（プロキシ本体を外部 IP に晒さず kubelet probe を通すため分離） | `127.0.0.1:18091` | `:18091` |
 | 宛先 URL | `PROXY_TARGET_URL` | 必須 | 転送先ベース URL（`https://` またはクラスタ内同一 ns 向け `http://`） | `https://monitoring.wpcapp.net` | `http://monitoring-pwa-backend` |
-| 宛先 `aud` | `SPIFFE_AUDIENCE` | 必須 | JWT-SVID に要求する `aud` クレーム | `monitoring-pwa` | `monitoring-pwa` |
+| 宛先 `aud` | `SPIFFE_AUDIENCE` | 必須 | JWT-SVID に要求する `aud` クレーム（環境ごとに一意） | `monitoring-pwa` | `$(POD_NAMESPACE)`（例: `nuage-monitoring-stack-pr-42`） |
 | Workload API ソケット | `SPIFFE_ENDPOINT_SOCKET` | 必須 | SPIRE Agent の UDS パス（`unix://...` 形式） | `unix:///run/spire/sockets/agent.sock` | `unix:///spiffe-workload-api/spire-agent.sock` |
 | JWT ファイルパス | `JWT_FILE_PATH` | 不採用 | `spiffe-helper` 経由ファイル方式は採らず `SPIFFE_ENDPOINT_SOCKET` 直結方式に統一したため設定項目から除外 | — | — |
+
+- **atelier でのインスタンス分離**: 本番と preview の両方に接続する場合でも、1 本のプロキシインスタンス（`127.0.0.1:18090`）の宛先や `SPIFFE_AUDIENCE` を切り替える運用は行わない。宛先環境ごとに別インスタンス（別ポート・別 `SPIFFE_AUDIENCE`・別 systemd ユニット）を起動する（例: preview 開発用インスタンス `monitoring-bot-proxy-pr-<N>.service` は `PROXY_LISTEN_ADDR=127.0.0.1:18092`、`HEALTH_LISTEN_ADDR=127.0.0.1:18093`、`PROXY_TARGET_URL=https://monitoring-pr-<N>.wpcapp.net`、`SPIFFE_AUDIENCE=nuage-monitoring-stack-pr-<N>` とし、必要であれば対応する `ClusterStaticEntry` セレクタを付与する）。
 
 - **リクエスト処理**:
   1. `127.0.0.1:18090` で受信したリクエストの `Authorization` ヘッダ（bot が付けたダミーの `xoxb-` / `xapp-` 等）を破棄し、`JWTSource.FetchJWTSVID(ctx, jwtsvid.Params{Audience: cfg.Audience})` で得た最新の `Authorization: Bearer <JWT-SVID>` に差し替える。
@@ -321,7 +324,7 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 
 - **Slack API Base URL**: 環境変数で切り替え可能にし、プロキシ接続時は `http://127.0.0.1:18090/slack/api/` を指定する（末尾の `/slack/api/` まで含めること。`monitoring-pwa` のルーターは `/slack/api/:method` で待ち受けているため）。
 - **トークン**: `SLACK_BOT_TOKEN`・`SLACK_APP_TOKEN` 等の環境変数はそのまま残し、プロキシ経由時はダミー値（例: `xoxb-spiffe`、`xapp-spiffe`）を渡す。
-- **開発中の接続先と移行**: Step 2 が `nuage-monitoring-stack` にマージされる前は、従来どおり preview の静的トークン（`https://monitoring-pr-<N>.wpcapp.net/slack/api/`）で進める。Step 2 マージ後は preview も JWT-SVID 必須かつ `atelier` bot の `sub` を受け付ける構成になるため、Step 1 完了後の `atelier` では `PROXY_TARGET_URL=https://monitoring-pr-<N>.wpcapp.net` を向けたローカルプロキシ経由（`http://127.0.0.1:18090/slack/api/`）へ切り替えて開発を継続する。
+- **開発中の接続先と移行**: Step 2 が `nuage-monitoring-stack` にマージされる前は、従来どおり preview の静的トークン（`https://monitoring-pr-<N>.wpcapp.net/slack/api/`）で進める。Step 2 マージ後は preview も JWT-SVID 必須かつ `atelier` bot の `sub` を受け付ける構成になるため、Step 1 完了後の `atelier` では本番用プロキシ（`127.0.0.1:18090`）の設定を切り替えず、preview 宛ての別インスタンス（例: `127.0.0.1:18092`、`PROXY_TARGET_URL=https://monitoring-pr-<N>.wpcapp.net`、`SPIFFE_AUDIENCE=nuage-monitoring-stack-pr-<N>`）を立て、bot の接続先を `http://127.0.0.1:18092/slack/api/` に向けて開発を継続する。
 
 ---
 
@@ -334,7 +337,7 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 | 環境変数名 | 必須 | 形式・内容 | 検証ルール |
 | :--- | :--- | :--- | :--- |
 | `SPIFFE_JWKS_URL` | 必須 | `http://spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys` | 空不可。有効な `http://` または `https://` URL であること |
-| `SPIFFE_JWT_AUDIENCE` | 必須 | `monitoring-pwa` | 空不可 |
+| `SPIFFE_JWT_AUDIENCE` | 必須 | 本番: `monitoring-pwa`、preview: `$(POD_NAMESPACE)`（例: `nuage-monitoring-stack-pr-42`） | 空不可（環境ごとに一意な値を設定する） |
 | `BOT_USERS_JSON` | 必須 | 許可する bot 一覧の JSON 配列（下例参照） | 1 件以上必須。`sub`（`spiffe://` 始まり・重複不可）、`user_id`（`U` 始まり・重複不可）、`bot_id`（`B` 始まり・重複不可）、`name`（空不可）。`is_default: true` は高々 1 件 |
 
 `BOT_USERS_JSON` の JSON スキーマ例（複数 bot を区別する）:
@@ -361,7 +364,7 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 
 - **base（`nuage-monitoring-stack/k8s/base/monitoring-pwa/monitoring-pwa.yaml`）**:
   - `monitoring-pwa-backend` コンテナの `env` に残っている `SLACK_BOT_TOKEN` と `SLACK_APP_TOKEN` の `secretKeyRef`（`optional` 指定なし）を **必ず削除** する。Secret 側から項目を消したまま `secretKeyRef` が残ると `CreateContainerConfigError` で本番・preview とも起動不能になる。
-  - 代わりに `SPIFFE_JWKS_URL` と `SPIFFE_JWT_AUDIENCE`（共通既定値）を base または各 overlay で設定する。
+  - 代わりに `SPIFFE_JWKS_URL` を base または各 overlay で設定する。`SPIFFE_JWT_AUDIENCE` は環境ごとに一意にするため base に共通既定値を置かず、各 overlay で必ず明示する。
   - `monitoring-pwa/backend/cmd/genauth` は、人間ログイン用の `COOKIE_SIGNING_KEY` と `USERS_JSON` 生成には引き続き必要なためツール自体は残し、`SLACK_BOT_TOKEN` と `SLACK_APP_TOKEN` の出力だけを削除する。
 - **本番（`nuage-monitoring-stack/k8s/overlays/prod/`）**:
   - `k8s/overlays/prod/secrets/secrets.yaml` から平文の `SLACK_BOT_TOKEN` と `SLACK_APP_TOKEN` の 2 行を削除する（同ファイル内の `COOKIE_SIGNING_KEY`・`USERS_JSON`・`VAPID_*` は変更しない）。
@@ -380,11 +383,11 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
     - name: SPIFFE_JWKS_URL
       value: "http://spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys"
     - name: SPIFFE_JWT_AUDIENCE
-      value: "monitoring-pwa"
+      value: "$(POD_NAMESPACE)"
     - name: BOT_USERS_JSON
       value: '[{"sub":"spiffe://nuage/ns/$(POD_NAMESPACE)/sa/echo-bot","user_id":"U02ECHOBOT","bot_id":"B02ECHOBOT","name":"echo-bot","is_default":true},{"sub":"spiffe://nuage/host/atelier/bot","user_id":"U01BOT","bot_id":"B01BOT","name":"nuage-bot"}]'
     ```
-  - preview 環境ではこの規則により、自 Namespace の `echo-bot` と `atelier` の bot のみが受け付けられ、他の PR（`pechka-pr-*` 等）からのなりすましを受け付けない。
+  - preview 環境ではこの規則により、自 Namespace の `echo-bot` と `atelier` の bot のみが受け付けられ、他の PR（`pechka-pr-*` 等）からのなりすましを受け付けない。また `SPIFFE_JWT_AUDIENCE` が `$(POD_NAMESPACE)`（`nuage-monitoring-stack-pr-<N>`）で一意になるため、preview 向けに発行された JWT-SVID を本番（`aud=monitoring-pwa`）へ流用できない。
 
 #### 5.3. API・WebSocket 認可と bot 区別・配信設計
 
@@ -393,7 +396,8 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 1. **API 認証と呼び出し元 bot の特定（`POST /slack/api/:method`）**:
    - `Authorization: Bearer <token>`（新規方式では form の `token` パラメータでの送出は使わない）から JWT-SVID を検証し、`sub` に一致する `domain.BotIdentity`（`UserID`, `BotID`, `Name`）を解決する。
    - `auth.test` は呼び出した bot 自身の `user_id`・`bot_id`・`user`（`Name`）を返す。
-   - `chat.postMessage` および `chat.update` は、呼び出した bot の `UserID`・`BotID`・`Username`（未指定時は `Name`）でメッセージを保存・更新する。
+   - `chat.postMessage` は呼び出した bot の `UserID`・`BotID`・`Username`（未指定時は `Name`）でメッセージを保存する。
+   - `chat.update` は、対象メッセージの元の投稿者（`BotID` と `UserID`）が呼び出した bot と一致する場合のみ更新を許可する。一致しない場合（他 bot の投稿や人間の投稿に対する更新要求）は更新せず、Slack 本物と同じエラー（`cant_update_message`）を返す。
    - `users.info` は `BOT_USERS_JSON` に登録された全 bot（および `SystemBotUserID`）を対象にユーザー情報を返す。
 2. **Socket Mode 接続の bot ごとの束ね（`apps.connections.open` / `/slack/socket`）**:
    - `apps.connections.open` は検証した JWT-SVID の `sub`（または対応する `BotIdentity`）をワンタイム `ticket` に紐づけて発行する。
@@ -412,7 +416,7 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 
 - `monitoring-pwa-test.yml`（`backend-and-e2e` ジョブ）および Go 単体・契約テストは SPIRE が無い CI 環境で実行されるため、テストコード内で一時的な署名鍵ペア（RSA または ECDSA）とモック JWKS HTTP サーバー（`httptest.NewServer` / Python `http.server` で `/keys` を返却）を起動し、署名済み JWT-SVID を生成して検証する。
 - 更新対象:
-  - Go 単体テスト（`internal/config/`, `internal/infra/spiffe/`, `internal/usecase/`, `internal/adapter/slackapi/`, `internal/infra/realtime/`）: 複数 bot の `auth.test`・`chat.postMessage`・bot ごとの Socket Mode 配信・`app_mention` 宛先限定・`kid` ローテーション追従・期限切れ/`aud` 不一致/`sub` 未許可の拒否を検証する。
+  - Go 単体テスト（`internal/config/`, `internal/infra/spiffe/`, `internal/usecase/`, `internal/adapter/slackapi/`, `internal/infra/realtime/`）: 複数 bot の `auth.test`・`chat.postMessage`・`chat.update`（投稿者一致時は更新成功、他 bot や人間の投稿時は `cant_update_message` で拒否）・bot ごとの Socket Mode 配信・`app_mention` 宛先限定・`kid` ローテーション追従・期限切れ/異なる環境 `aud` を含む `aud` 不一致/`sub` 未許可の拒否を検証する。
   - Go 契約テスト（`cmd/server/contract_test.go`）: モック JWKS と署名済み JWT-SVID を使って既存スナップショット契約を維持する。
   - `echo-bot` E2E（`monitoring-pwa/echo-bot/test_e2e.py`）: `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` 環境変数の代わりに `SPIFFE_JWKS_URL`・`SPIFFE_JWT_AUDIENCE`・`BOT_USERS_JSON` でバックエンドを起動し、テスト用署名鍵で作った JWT-SVID（またはテスト用プロキシ）で疎通を検証する。
 
@@ -432,6 +436,23 @@ AI エージェントは SOPS 操作禁止ルールに従い、CA 秘密鍵の�
 - **`token-proxy` サイドカー追加**:
   - イメージ: `ghcr.io/k-wa-wa/nuage-cluster-spiffe-token-proxy:latest`、`imagePullPolicy: Always`
   - Deployment アノテーションの `keel.sh/monitorContainers` を `"^(echo-bot|token-proxy)$"` に更新する（`nuage-workspace` の `keel.rego` ポリシー準拠）。
+  - 環境変数: Downward API で `POD_NAMESPACE`（`metadata.namespace`）を渡し、以下を設定する（`SPIFFE_AUDIENCE` を `monitoring-pwa-backend` 側の `SPIFFE_JWT_AUDIENCE` と一致させる）。
+    ```yaml
+    - name: POD_NAMESPACE
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
+    - name: PROXY_LISTEN_ADDR
+      value: "127.0.0.1:18090"
+    - name: HEALTH_LISTEN_ADDR
+      value: ":18091"
+    - name: PROXY_TARGET_URL
+      value: "http://monitoring-pwa-backend"
+    - name: SPIFFE_AUDIENCE
+      value: "$(POD_NAMESPACE)"
+    - name: SPIFFE_ENDPOINT_SOCKET
+      value: "unix:///spiffe-workload-api/spire-agent.sock"
+    ```
   - `readinessProbe` / `livenessProbe` はポート `18091` の `/healthz` を指定する（`probes.rego` 準拠）。
   - `resources.requests` / `resources.limits` を設定し、`securityContext`（`runAsNonRoot`, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`）を付与する。
   - CSI ボリュームをマウントする:
@@ -546,8 +567,8 @@ AI は SOPS 操作および本番反映を行わない。以下は人間が実�
    - **失敗時の対処**: Agent が古い CA キャッシュを保持して再接続に失敗する場合は、Agent 側の `data_dir` を揮発領域にし再接続エラー時の自動再起動（または `ExecStartPre` でのバンドル初期化）で必ず再ブートストラップするようにする。
 3. **PSA `baseline` 環境における `csi.spiffe.io` インラインボリューム**:
    - **確認方法**: `nuage-monitoring-stack` の PR preview 環境（`pod-security.kubernetes.io/enforce: baseline`）で `csi.spiffe.io` ボリュームを持つ `echo-bot` Pod が Admission 拒否されず起動し、ソケット通信できるか確認する。
-4. **Socket Mode の実動作確認**:
-   - **確認方法**: `echo-bot` が `token-proxy`（`http://127.0.0.1:18090/slack/api/`）経由で `apps.connections.open` を呼び出し、返却された WebSocket URL へ直接接続してメンション応答が返ること、`invalid_auth` 時にリクエストが通らないことを確認する。
+4. **Socket Mode と環境別 `aud`・`chat.update` の実動作確認**:
+   - **確認方法**: `echo-bot` が `token-proxy`（`http://127.0.0.1:18090/slack/api/`）経由で `apps.connections.open` を呼び出し、返却された WebSocket URL へ直接接続してメンション応答が返ること、`invalid_auth` 時にリクエストが通らないこと、異なる環境の `aud`（例: preview 用 `aud` の JWT-SVID を本番 `monitoring-pwa` へ送信した場合）が拒否されること、および `chat.update` で他者の投稿更新が `cant_update_message` で拒否されることを確認する。
 
 ---
 
